@@ -16,6 +16,7 @@ const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWi
 const { confirmationTraceMeta, withoutConfirmationTrace } = jiti("../src/lib/ai/agentPlan/debugTrace.ts");
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
+const { parseJsonObject } = jiti("../src/lib/ai/agentPlan/validatedJson.ts");
 const {
   applyInterpretResultIfFresh,
   buildStaleInterpretResultFeedback,
@@ -29,6 +30,7 @@ const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
+const { generateDashboard } = jiti("../src/lib/dashboard/generateDashboard.ts");
 const { generateVisibleDashboardSnapshot } = jiti("../src/lib/dashboard/visibleDashboardSnapshot.ts");
 const { resolvePendingConfirmations } = jiti("../src/lib/confirmation/resolvePendingConfirmations.ts");
 
@@ -1532,6 +1534,15 @@ const evals = [
       assert.equal(result.trace.some((item) => item.rule === "temporal.repair.remove_unsupported_milk_shopping_due_at"), true);
       assert.equal(result.trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
       assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+
+      const applied = applyInterpretation(rawText, "text", createState(), result.interpretation).state;
+      const shoppingTask = applied.tasks.find((item) => /牛奶/.test(item.title));
+      const dashboard = generateDashboard(applied);
+
+      assert.ok(shoppingTask);
+      assert.equal(shoppingTask.horizon, "later");
+      assert.equal(dashboard.today.some((item) => /牛奶/.test(item.title)), false);
+      assert.equal(dashboard.shopping.some((item) => /牛奶/.test(item.itemName)), true);
     }
   },
   {
@@ -2121,6 +2132,22 @@ const evals = [
     }
   },
   {
+    name: "Agent Plan JSON parser repairs bare identifier string values",
+    run() {
+      const parsed = parseJsonObject(`{
+        "feedback": {"title":"已整理","detail":"已整理。"},
+        "actions": [
+          {"type":add_life_event, "ref":shanghai_trip, "title":"本周末去上海", "category":travel}
+        ],
+        "memoryWrites": []
+      }`);
+
+      assert.equal(parsed.actions[0].type, "add_life_event");
+      assert.equal(parsed.actions[0].ref, "shanghai_trip");
+      assert.equal(parsed.actions[0].category, "travel");
+    }
+  },
+  {
     name: "AI interpretation schema rejects malformed actions and memory writes",
     run() {
       const raw = {
@@ -2209,6 +2236,7 @@ const evals = [
       const parsed = parseAiInterpretation(raw);
       assert.match(parsed.errors.join(" "), /memoryWrites\[0\]\.type/);
       assert.equal(parsed.value.memoryWrites.length, 0);
+      assert.equal(parsed.value.planTrace?.some((item) => item.rule === "memory.validation.drop_invalid_write"), true);
       assert.deepEqual(validateFinalInterpretation(rawText, parsed.value, raw), []);
     }
   },

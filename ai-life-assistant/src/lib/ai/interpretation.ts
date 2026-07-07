@@ -511,8 +511,19 @@ export function parseAiInterpretation(value: unknown): ParseResult<AiInterpretat
   const memorySource = readMemorySource(value);
   if (!memorySource.source) errors.push(`${memorySource.key} 必须是数组。`);
   const parsedMemoryWrites = (memorySource.source ?? []).map((item, index) => parseMemoryWrite(item, index));
-  errors.push(...parsedMemoryWrites.flatMap((item) => item.errors));
+  const memoryErrors = parsedMemoryWrites.flatMap((item) => item.errors);
+  errors.push(...memoryErrors);
   const memoryWrites = parsedMemoryWrites.map((item) => item.value).filter((item): item is MemoryWrite => Boolean(item));
+  const planTrace: PlanTrace[] = memoryErrors.length
+    ? [
+        {
+          rule: "memory.validation.drop_invalid_write",
+          severity: "repair",
+          before: { errorCount: memoryErrors.length, errors: memoryErrors },
+          reason: "Invalid memory writes were ignored so primary actions could still be saved."
+        }
+      ]
+    : [];
 
   if (!title || !detail) return { value: null, errors };
 
@@ -524,7 +535,8 @@ export function parseAiInterpretation(value: unknown): ParseResult<AiInterpretat
         question
       },
       actions,
-      memoryWrites
+      memoryWrites,
+      planTrace: planTrace.length ? planTrace : undefined
     },
     errors
   };

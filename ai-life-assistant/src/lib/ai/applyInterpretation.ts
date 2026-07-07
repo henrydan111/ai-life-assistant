@@ -2,7 +2,7 @@ import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation"
 import { createId } from "@/lib/id";
 import { applyMemoryWrites } from "@/lib/memory/applyMemoryWrites";
 import { isSameLocalDay, nowIso } from "@/lib/time/parseTime";
-import type { AssistantCheckIn, AssistantState, MemoryWrite, ParseFeedback, RecurrenceCandidate, RoutineGoal, ShoppingItem, Task, TranscriptRepair } from "@/types/domain";
+import type { AssistantCheckIn, AssistantState, Horizon, MemoryWrite, ParseFeedback, RecurrenceCandidate, RoutineGoal, ShoppingItem, Task, TranscriptRepair } from "@/types/domain";
 
 export type InterpretResult = {
   state: AssistantState;
@@ -242,13 +242,35 @@ function createTaskFromAction(action: Extract<InterpretAction, { type: "add_task
   };
 }
 
-function createShoppingTask(itemName: string, sourceInputId: string, dueAt?: string): Task {
+function segmentMentioning(rawText: string, pattern: RegExp) {
+  return rawText.split(/然后|另外|还有|并且|到时候|[，。,.!?！？；;]/).find((segment) => pattern.test(segment)) ?? rawText;
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasDateOnlyShoppingTiming(rawText: string, itemName: string) {
+  const segment = segmentMentioning(rawText, new RegExp(escapeRegExp(itemName)));
+  const hasDate = /(明天|后天|大后天|周[一二三四五六日天]|星期[一二三四五六日天])/.test(segment);
+  const hasTimeOfDay = /(今晚|明早|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：))/.test(segment);
+  return hasDate && !hasTimeOfDay;
+}
+
+function shoppingTaskHorizon(rawText: string, itemName: string, dueAt?: string): Horizon {
+  if (dueAt) return "today";
+  const segment = segmentMentioning(rawText, new RegExp(escapeRegExp(itemName)));
+  if (/今天/.test(segment)) return "today";
+  return hasDateOnlyShoppingTiming(rawText, itemName) ? "later" : "today";
+}
+
+function createShoppingTask(itemName: string, sourceInputId: string, dueAt: string | undefined, horizon: Horizon): Task {
   const now = nowIso();
   return {
     id: createId("task"),
     title: titleCase(shoppingTaskTitle(itemName)),
     type: "task",
-    horizon: "today",
+    horizon,
     dueAt,
     energyRequired: "low",
     priority: "medium",
@@ -317,6 +339,7 @@ function suppressDuplicateRoutineGoalMemoryWrites(state: AssistantState, actions
 }
 
 function addShoppingItem(
+  rawText: string,
   state: AssistantState,
   action: Extract<InterpretAction, { type: "add_shopping_item" }>,
   sourceInputId: string,
@@ -363,7 +386,9 @@ function addShoppingItem(
   return {
     ...state,
     shoppingItems,
-    tasks: shouldCreateTask ? [createShoppingTask(action.itemName, sourceInputId, action.dueAt), ...state.tasks] : state.tasks,
+    tasks: shouldCreateTask
+      ? [createShoppingTask(action.itemName, sourceInputId, action.dueAt, shoppingTaskHorizon(rawText, action.itemName, action.dueAt)), ...state.tasks]
+      : state.tasks,
     checkIns: prompt ? [prompt, ...state.checkIns] : state.checkIns,
     recurrenceCandidates
   };
@@ -464,7 +489,7 @@ export function applyInterpretation(
     }
 
     if (action.type === "add_shopping_item") {
-      next = addShoppingItem(next, action, inputId, refs);
+      next = addShoppingItem(rawText, next, action, inputId, refs);
       return;
     }
 

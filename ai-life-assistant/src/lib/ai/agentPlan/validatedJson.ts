@@ -1,6 +1,37 @@
 import { requestAgentPlanChatCompletion } from "./provider";
 
-function parseJsonObject(content: string) {
+const bareIdentifierStringKeys = [
+  "type",
+  "ref",
+  "relatedRef",
+  "relatedId",
+  "relatedType",
+  "status",
+  "category",
+  "cadence",
+  "targetTimeRelation",
+  "scope",
+  "priority",
+  "taskType",
+  "horizon",
+  "energyRequired",
+  "expectedAnswerKind",
+  "targetField",
+  "slot"
+];
+
+function quoteBareIdentifierStringValues(content: string) {
+  const keyPattern = bareIdentifierStringKeys.join("|");
+  const pattern = new RegExp(`"(${keyPattern})"\\s*:\\s*([A-Za-z_][A-Za-z0-9_./:-]*)(\\s*[,}])`, "g");
+  return content.replace(pattern, (_match, key: string, value: string, suffix: string) => {
+    if (value === "true" || value === "false" || value === "null") {
+      return `"${key}":${value}${suffix}`;
+    }
+    return `"${key}":"${value}"${suffix}`;
+  });
+}
+
+export function parseJsonObject(content: string) {
   const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = fenced ? fenced[1] : content;
   const firstBrace = raw.indexOf("{");
@@ -11,12 +42,24 @@ function parseJsonObject(content: string) {
   const candidate = raw.slice(firstBrace, lastBrace + 1);
   try {
     return JSON.parse(candidate) as unknown;
-  } catch (error) {
+  } catch (initialError) {
     const withoutTrailingCommas = candidate.replace(/,\s*([}\]])/g, "$1");
     if (withoutTrailingCommas !== candidate) {
-      return JSON.parse(withoutTrailingCommas) as unknown;
+      try {
+        return JSON.parse(withoutTrailingCommas) as unknown;
+      } catch {
+        // Fall through to the narrow schema-key repair below.
+      }
     }
-    throw error;
+    const withQuotedBareIdentifiers = quoteBareIdentifierStringValues(withoutTrailingCommas);
+    if (withQuotedBareIdentifiers !== withoutTrailingCommas) {
+      try {
+        return JSON.parse(withQuotedBareIdentifiers) as unknown;
+      } catch {
+        // Keep the original parser error; it is usually the most actionable.
+      }
+    }
+    throw initialError;
   }
 }
 
