@@ -143,6 +143,7 @@ export async function POST(request: Request) {
             ...result,
             ...meta,
             feedback,
+            confirmationTrace: confirmation?.confirmationTrace,
             provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
           });
           return;
@@ -184,6 +185,7 @@ export async function POST(request: Request) {
           ...result,
           ...meta,
           feedback,
+          confirmationTrace: confirmation?.confirmationTrace,
           type: "result",
           provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
           model: resolveAgentPlanLanguageModel(model)
