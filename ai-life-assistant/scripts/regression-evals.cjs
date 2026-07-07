@@ -1362,6 +1362,79 @@ const evals = [
     }
   },
   {
+    name: "ResponseRepair clears redundant routine goal confirmation copy",
+    run() {
+      const rawText = "我最近希望每天半夜12点前睡觉";
+      const trace = [];
+      const result = repairFeedbackCopy(rawText, {
+        feedback: {
+          title: "确认日常目标",
+          detail: "短期目标还是长期目标，我先帮你确认。",
+          question: "你要设置的日常目标是最近每天午夜12点前睡觉，对吗？短期目标还是长期目标？"
+        },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天 00:00 前睡觉",
+            cadence: "daily",
+            targetTime: "00:00",
+            targetTimeRelation: "before",
+            scope: "recent",
+            scopeLabel: "最近"
+          }
+        ],
+        memoryWrites: []
+      }, trace);
+
+      const visibleFeedback = [result.feedback.title, result.feedback.detail, result.feedback.question].filter(Boolean).join(" ");
+      assert.doesNotMatch(visibleFeedback, /确认日常目标|你要设置的日常目标|短期目标|长期目标|对吗/);
+      assert.equal(result.feedback.title, "已整理事项");
+      assert.equal(result.feedback.detail, "我已按已确认的信息整理，并把不确定的部分留作确认。");
+      assert.equal(result.feedback.question, undefined);
+      assert.equal(trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
+    }
+  },
+  {
+    name: "ResponseRepair uses injected travel feedback predicate",
+    run() {
+      const rawText = "这周末计划去上海";
+      const unsafeFeedback = {
+        feedback: {
+          title: "周日下午2点去上海",
+          detail: "我已把上海行程暂定为周日下午2点。",
+          question: "上海行程是本周日14点吗？"
+        },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认出行时间",
+            question: "这周末去上海，具体是哪天、几点出发？",
+            relatedType: "life_event",
+            relatedRef: "shanghai_trip",
+            clarification: { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" }
+          }
+        ],
+        memoryWrites: []
+      };
+
+      const defaultTrace = [];
+      const withoutTravelPredicate = repairFeedbackCopy(rawText, unsafeFeedback, defaultTrace);
+      assert.match(withoutTravelPredicate.feedback.title, /周日下午2点/);
+      assert.equal(defaultTrace.length, 0);
+
+      const trace = [];
+      const result = repairFeedbackCopy(rawText, unsafeFeedback, trace, {
+        hasUnsafeCoarseWeekendTravelText: (_rawText, text) => /周日下午2点|本周日14点/.test(text)
+      });
+      const visibleFeedback = [result.feedback.title, result.feedback.detail, result.feedback.question].filter(Boolean).join(" ");
+
+      assert.doesNotMatch(visibleFeedback, /周日下午2点|本周日14点/);
+      assert.equal(result.feedback.question, "这周末去上海，具体是哪天、几点出发？");
+      assert.equal(trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
+    }
+  },
+  {
     name: "Agent Plan post-processing sanitizes unsafe default confirmation feedback",
     run() {
       const rawText = "我最近都希望每天能晚上12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶，我这周末另外要计划去上海";
