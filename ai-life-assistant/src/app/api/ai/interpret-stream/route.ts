@@ -3,6 +3,7 @@ import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
 import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
+import type { InterpretResult } from "@/lib/store/interpretResult";
 import type { AiProcessingUpdate, AssistantState, TranscriptRepair } from "@/types/domain";
 
 export const runtime = "nodejs";
@@ -18,14 +19,7 @@ type InterpretRequest = {
 
 type StreamMessage =
   | ({ type: "progress" } & AiProcessingUpdate)
-  | {
-      type: "result";
-      state?: AssistantState;
-      feedback?: { title: string; detail: string; question?: string };
-      provider: string;
-      model?: string;
-      error?: string;
-    };
+  | ({ type: "result" } & InterpretResult);
 
 function isValidRequest(body: unknown): body is InterpretRequest {
   return Boolean(body) && typeof body === "object";

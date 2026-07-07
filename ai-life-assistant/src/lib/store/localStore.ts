@@ -15,6 +15,7 @@ import { DEFAULT_TIMEZONE, nowIso } from "@/lib/time/parseTime";
 import { createId } from "@/lib/id";
 import { defaultAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { compactMemoryItems } from "@/lib/memory/compactMemoryItems";
+import { shouldSkipInterpretStateUpdate, type InterpretResult } from "@/lib/store/interpretResult";
 
 const STORAGE_KEY = "ai-life-assistant-state-v1";
 const legacyDefaultLanguageModel = "doubao-seed-2.0-lite";
@@ -37,15 +38,11 @@ type SubmitInputOptions = {
 };
 
 type ProgressReporter = (update: AiProcessingUpdate) => void;
+type CompletedInterpretResult = InterpretResult & { feedback: ParseFeedback };
 
 type InterpretStreamMessage =
   | ({ type: "progress" } & AiProcessingUpdate)
-  | {
-      type: "result";
-      state?: AssistantState;
-      feedback?: ParseFeedback;
-      error?: string;
-    };
+  | ({ type: "result" } & InterpretResult);
 
 function normalizePreferences(preferences: LegacyUserPreferences): UserPreferences {
   const { maxDailyTasks: _maxDailyTasks, ...currentPreferences } = preferences;
@@ -298,7 +295,7 @@ async function submitInputWithProgress(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  let finalResult: { state: AssistantState; feedback: ParseFeedback } | undefined;
+  let finalResult: CompletedInterpretResult | undefined;
   let finalError: string | undefined;
 
   function handleLine(line: string) {
@@ -315,8 +312,8 @@ async function submitInputWithProgress(
       return;
     }
     if (message.type === "result") {
-      if (message.state && message.feedback) {
-        finalResult = { state: message.state, feedback: message.feedback };
+      if (message.feedback && (message.state || shouldSkipInterpretStateUpdate(message))) {
+        finalResult = { ...message, feedback: message.feedback };
       } else if (message.error) {
         finalError = message.error;
       }
@@ -368,7 +365,10 @@ export function useAssistantStore() {
       ) {
         if (onProgress) {
           const result = await submitInputWithProgress(rawText, inputType, state, onProgress, options);
-          setState(normalizeAssistantState(result.state));
+          if (!shouldSkipInterpretStateUpdate(result)) {
+            if (!result.state) throw new Error("AI interpretation result did not include state.");
+            setState(normalizeAssistantState(result.state));
+          }
           return result.feedback;
         }
 
@@ -384,11 +384,15 @@ export function useAssistantStore() {
             model: state.preferences.languageModel
           })
         });
-        const result = (await response.json()) as { state?: AssistantState; feedback?: ParseFeedback; error?: string };
-        if (!response.ok || !result.state || !result.feedback) {
+        const result = (await response.json()) as InterpretResult;
+        const skipStateUpdate = shouldSkipInterpretStateUpdate(result);
+        if (!response.ok || !result.feedback || (!result.state && !skipStateUpdate)) {
           throw new Error(result.error ?? "AI interpretation failed.");
         }
-        setState(normalizeAssistantState(result.state));
+        if (!skipStateUpdate) {
+          if (!result.state) throw new Error("AI interpretation result did not include state.");
+          setState(normalizeAssistantState(result.state));
+        }
         return result.feedback;
       },
       completeTask(taskId: string) {

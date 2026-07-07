@@ -1,7 +1,6 @@
 import type { AssistantState, ParseFeedback } from "@/types/domain";
+import { safePlanningFailureProvider } from "@/lib/store/interpretResult";
 import { resolveAgentPlanLanguageModel } from "./provider";
-
-export const safePlanningFailureProvider = "volcengine_agent_plan_runtime_failed_safely";
 
 export function safePlanningFailureFeedback(): ParseFeedback {
   return {
@@ -15,7 +14,8 @@ export function buildSafePlanningFailureResult(state: AssistantState, model?: st
     state,
     feedback: safePlanningFailureFeedback(),
     provider: safePlanningFailureProvider,
-    model: resolveAgentPlanLanguageModel(model)
+    model: resolveAgentPlanLanguageModel(model),
+    safeFailure: true,
+    stateUnchanged: true
   };
 }
-

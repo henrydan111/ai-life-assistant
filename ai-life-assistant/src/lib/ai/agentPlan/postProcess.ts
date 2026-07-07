@@ -105,22 +105,28 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
   return { ...interpretation, actions };
 }
 
+function isSleepGoalTask(action: InterpretAction) {
+  return action.type === "add_task" && /(睡觉|上床|入睡|休息)/.test(actionText(action));
+}
+
 function isRecurringSleepTask(action: InterpretAction) {
   return (
-    action.type === "add_task" &&
+    isSleepGoalTask(action) &&
     /(每天|每日|天天|每晚|daily|every day|every night)/i.test(actionText(action)) &&
-    /(睡觉|睡|上床|休息)/.test(actionText(action))
+    /(睡觉|上床|入睡|休息)/.test(actionText(action))
   );
 }
 
-function removeDuplicateRecurringSleepTasks(actions: InterpretAction[], trace: PlanTrace[]) {
+function removeDuplicateRecurringSleepTasks(actions: InterpretAction[], trace: PlanTrace[], removeAnySleepTask = false) {
   return actions.filter((action) => {
-    if (!isRecurringSleepTask(action)) return true;
+    if (!(removeAnySleepTask ? isSleepGoalTask(action) : isRecurringSleepTask(action))) return true;
     trace.push({
       rule: "routine.repair.remove_duplicate_task",
       severity: "repair",
       before: action,
-      reason: "Recurring sleep goals should be represented as RoutineGoal, not as a one-time Task."
+      reason: removeAnySleepTask
+        ? "Raw input is already represented as a recurring sleep RoutineGoal, so a parallel sleep Task would duplicate the goal."
+        : "Recurring sleep goals should be represented as RoutineGoal, not as a one-time Task."
     });
     return false;
   });
@@ -246,7 +252,7 @@ function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretat
       );
     }
 
-    actions = removeDuplicateRecurringSleepTasks(actions, trace);
+    actions = removeDuplicateRecurringSleepTasks(actions, trace, Boolean(ref));
     return { ...interpretation, actions };
   }
 
@@ -297,7 +303,7 @@ function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretat
     );
   }
 
-  actions = removeDuplicateRecurringSleepTasks(actions, trace);
+  actions = removeDuplicateRecurringSleepTasks(actions, trace, true);
   return { ...interpretation, actions };
 }
 

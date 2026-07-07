@@ -13,8 +13,9 @@ const { parseAiInterpretation, validateAiInterpretationSchema } = jiti("../src/l
 const { validateCoverage, validateFinalInterpretation } = jiti("../src/lib/ai/agentPlan/validators.ts");
 const { actionText } = jiti("../src/lib/ai/agentPlan/actionText.ts");
 const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWithTrace } = jiti("../src/lib/ai/agentPlan/postProcess.ts");
-const { buildSafePlanningFailureResult, safePlanningFailureProvider } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
+const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
+const { safePlanningFailureProvider, shouldSkipInterpretStateUpdate } = jiti("../src/lib/store/interpretResult.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
@@ -77,6 +78,36 @@ function activeCheckIns(state, pattern) {
 
 function activeRoutineGoals(state, pattern) {
   return state.routineGoals.filter((goal) => goal.status !== "cancelled" && goal.status !== "done" && pattern.test(`${goal.title} ${goal.description ?? ""}`));
+}
+
+function productStateSnapshot(state) {
+  return {
+    tasks: state.tasks,
+    projects: state.projects,
+    shoppingItems: state.shoppingItems,
+    routineGoals: state.routineGoals,
+    moodLogs: state.moodLogs,
+    lifeEvents: state.lifeEvents,
+    checkIns: state.checkIns,
+    recurrenceCandidates: state.recurrenceCandidates,
+    memoryItems: state.memoryItems
+  };
+}
+
+function assertFeedbackStateConsistency(before, after, feedback) {
+  const feedbackText = [feedback.title, feedback.detail, feedback.question].filter(Boolean).join(" ");
+  if (/没有保存|没有修改|没有更改/.test(feedbackText)) {
+    assert.deepEqual(productStateSnapshot(after), productStateSnapshot(before));
+  }
+  if (feedback.question) {
+    assert.equal(
+      after.checkIns.some((checkIn) => {
+        const text = `${checkIn.title} ${checkIn.question}`;
+        return checkIn.status !== "dismissed" && (text.includes(feedback.question) || similar(text, feedback.question));
+      }),
+      true
+    );
+  }
 }
 
 const evals = [
@@ -145,13 +176,16 @@ const evals = [
   {
     name: "local fallback treats no-op input as no state change",
     run() {
-      const result = parseLocalInput("谢谢！", createState(), "text").state;
+      const before = createState();
+      const parsed = parseLocalInput("谢谢！", before, "text");
+      const result = parsed.state;
 
       assert.equal(result.tasks.length, 0);
       assert.equal(result.lifeEvents.length, 0);
       assert.equal(result.shoppingItems.length, 0);
       assert.equal(result.checkIns.length, 0);
       assert.equal(result.inputs.length, 1);
+      assertFeedbackStateConsistency(before, result, parsed.feedback);
     }
   },
   {
@@ -174,9 +208,13 @@ const evals = [
 
       assert.equal(result.provider, safePlanningFailureProvider);
       assert.equal(result.state, state);
+      assert.equal(result.safeFailure, true);
+      assert.equal(result.stateUnchanged, true);
+      assert.equal(shouldSkipInterpretStateUpdate(result), true);
       assert.match(result.feedback.detail, /没有修改|避免记错/);
       assert.doesNotMatch(result.feedback.title, /validation|schema|failed/i);
       assert.doesNotMatch(result.feedback.detail, /validation|schema|failed|actions\[/i);
+      assertFeedbackStateConsistency(state, result.state, result.feedback);
     }
   },
   {
@@ -214,9 +252,21 @@ const evals = [
     }
   },
   {
+    name: "temporal policy maps explicit evening sleep hours to 24-hour time",
+    run() {
+      const resolution = resolveRecurringSleepTarget("我最近希望每晚11点前睡觉。");
+
+      assert.equal(resolution.ambiguity, "none");
+      assert.equal(resolution.evidence, "explicit_evening");
+      assert.equal(resolution.targetTime, "23:00");
+      assert.equal(resolution.targetTimeRelation, "before");
+    }
+  },
+  {
     name: "local fallback asks before saving bare recurring sleep target time",
     run() {
-      const result = parseLocalInput("我最近希望每天12点前睡觉。", createState(), "text");
+      const before = createState();
+      const result = parseLocalInput("我最近希望每天12点前睡觉。", before, "text");
       const goals = activeRoutineGoals(result.state, /睡觉|睡|休息/);
 
       assert.equal(goals.length, 1);
@@ -233,6 +283,7 @@ const evals = [
         ),
         true
       );
+      assertFeedbackStateConsistency(before, result.state, result.feedback);
     }
   },
   {
@@ -393,7 +444,7 @@ const evals = [
             targetTimeRelation: "before",
             scope: "recent"
           },
-          { type: "add_task", title: "每天半夜12点前睡觉" }
+          { type: "add_task", title: "半夜12点前睡觉" }
         ],
         memoryWrites: []
       });

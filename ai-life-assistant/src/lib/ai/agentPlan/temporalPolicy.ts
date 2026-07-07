@@ -2,7 +2,7 @@ export type SleepTimeResolution = {
   targetTime?: string;
   targetTimeRelation?: "before" | "at" | "after";
   ambiguity: "none" | "ampm" | "missing_time";
-  evidence: "explicit_midnight" | "explicit_noon" | "numeric_only" | "none";
+  evidence: "explicit_midnight" | "explicit_noon" | "explicit_evening" | "numeric_only" | "none";
   sourceQuote?: string;
   question?: string;
 };
@@ -11,8 +11,9 @@ const recurrencePattern = /(每天|每日|天天|每晚|daily|every day|every ni
 const sleepPattern = /(睡觉|睡|上床|休息)/;
 const twelvePattern = /(12|十二)\s*点/;
 const beforePattern = /前/;
+const explicitEveningPattern = /(晚上|夜里|晚间|今晚|每晚)/;
 const explicitMidnightPattern =
-  /(半夜|午夜|零点|零时|0点|0\s*:\s*00|24点|二十四点|晚上\s*(12|十二)\s*点|夜里\s*(12|十二)\s*点|凌晨\s*(12|十二)\s*点|今晚\s*(12|十二)\s*点|每晚\s*(12|十二)\s*点)/;
+  /(半夜|午夜|零点|零时|0点|0\s*:\s*00|24点|二十四点|晚上\s*(12|十二)\s*点|夜里\s*(12|十二)\s*点|晚间\s*(12|十二)\s*点|凌晨\s*(12|十二)\s*点|今晚\s*(12|十二)\s*点|每晚\s*(12|十二)\s*点)/;
 const explicitNoonPattern =
   /((中午|正午|午间)\s*(12|十二)\s*点|(12|十二)\s*点\s*(中午|正午|午间))/;
 
@@ -85,6 +86,25 @@ export function resolveRecurringSleepTarget(rawText: string): SleepTimeResolutio
     };
   }
 
+  if (explicitEveningPattern.test(rawText) && hour >= 6 && hour <= 11) {
+    return {
+      targetTime: `${String(hour + 12).padStart(2, "0")}:00`,
+      targetTimeRelation: hasBefore ? "before" : undefined,
+      ambiguity: "none",
+      evidence: "explicit_evening",
+      sourceQuote: rawText
+    };
+  }
+
+  if (explicitEveningPattern.test(rawText) && hour >= 1 && hour <= 5) {
+    return {
+      ambiguity: "ampm",
+      evidence: "numeric_only",
+      sourceQuote: rawText,
+      question: "你说的晚上这个时间，是指当天晚上，还是凌晨后的时间？"
+    };
+  }
+
   return {
     targetTime: `${String(hour % 24).padStart(2, "0")}:00`,
     targetTimeRelation: hasBefore ? "before" : undefined,
@@ -93,4 +113,3 @@ export function resolveRecurringSleepTarget(rawText: string): SleepTimeResolutio
     sourceQuote: rawText
   };
 }
-

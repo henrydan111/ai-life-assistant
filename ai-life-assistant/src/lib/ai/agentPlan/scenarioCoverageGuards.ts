@@ -43,6 +43,10 @@ function hasAction(actions: InterpretAction[], type: InterpretAction["type"], pa
   return actions.some((action) => action.type === type && pattern.test(actionText(action)));
 }
 
+function isSleepGoalTask(action: InterpretAction) {
+  return action.type === "add_task" && /(睡觉|上床|入睡|休息)/.test(actionText(action));
+}
+
 function hasRelatedCheckIn(actions: InterpretAction[], pattern: RegExp, relatedType?: "task" | "shopping_item" | "life_event" | "project") {
   return actions.some(
     (action) =>
@@ -82,9 +86,8 @@ export function validateCoreIntentCoverage(rawText: string, actions: InterpretAc
     }
     const duplicateSleepTasks = actions.filter(
       (action) =>
-        action.type === "add_task" &&
-        /(每天|每日|天天|每晚|daily|every day|every night)/i.test(actionText(action)) &&
-        /(睡觉|睡|上床|休息)/.test(actionText(action))
+        isSleepGoalTask(action) &&
+        (hasRoutineGoal || /(每天|每日|天天|每晚|daily|every day|every night)/i.test(actionText(action)))
     );
     if (duplicateSleepTasks.length) {
       errors.push("重复睡眠目标不能同时创建 add_routine_goal 和同语义 add_task。");
