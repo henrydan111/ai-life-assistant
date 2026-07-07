@@ -39,6 +39,17 @@ When making design or implementation tradeoffs:
 - If a fallback would feel clumsy, repetitive, opaque, or unsafe, pause and design a better path.
 - Prefer graceful degradation, clear explanation, and useful partial results over hidden mechanical workarounds.
 
+## System Upgrade Verification
+
+For system-level changes outside the frontend, the product success rate depends on local code design, prompt quality, and actual AI interaction results. After upgrading backend logic, AI orchestration, prompts, memory, storage, parsing, scheduling, or other non-frontend systems:
+
+- Use the project's full testing framework rather than ad hoc, low-quality scripts.
+- Simulate realistic user needs end to end, including messy natural language, ambiguous intent, follow-up context, and failure cases.
+- Actually call the configured AI provider for representative scenarios when credentials and network access are available.
+- Verify that AI responses are interpreted, stored, displayed, and degraded correctly by the local code.
+- Treat prompt regressions, brittle parsing, unsafe automation, or confusing fallback behavior as product failures, not merely test failures.
+- If live AI verification cannot be run, clearly document why, keep automated coverage meaningful, and do not claim the upgrade is fully verified.
+
 ## Interface Tone
 
 - Keep the interface calm, direct, and reassuring.
