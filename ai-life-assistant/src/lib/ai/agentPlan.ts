@@ -22,12 +22,24 @@ type AgentPlanChatCompletionRequest = {
   response_format?: { type: "json_object" };
 };
 
-const SYSTEM_PROMPT = `
-你是一个面向个人生活管理的 AI 秘书。你的职责是把用户的一句话转成结构化动作，帮助产品维护待办、购物、家庭日程、出行准备、主动追问和状态感知。
+type IntentUnderstanding = {
+  feedback: AiInterpretation["feedback"];
+  actions: InterpretAction[];
+  memoryCandidates: unknown[];
+  proactiveCheckins: unknown[];
+};
 
-必须只输出 JSON，不要 Markdown，不要解释。JSON 格式：
+type CoverageReview = {
+  coverage: "complete" | "incomplete";
+  missingIntents: string[];
+  revisedActions: InterpretAction[];
+  memoryCandidates: unknown[];
+  proactiveCheckins: unknown[];
+};
+
+const ACTION_SCHEMA = `
+可用 action JSON schema：
 {
-  "feedback": { "title": "短标题", "detail": "给用户看的简短反馈", "question": "可选追问" },
   "actions": [
     { "type": "add_task", "ref": "可选内部引用", "title": "...", "horizon": "today|this_week|later", "dueAt": "ISO 时间", "priority": "low|medium|high", "energyRequired": "low|medium|high" },
     { "type": "add_shopping_item", "ref": "可选内部引用", "itemName": "...", "status": "needed|ordered|bought", "expectedAt": "ISO 时间", "createTask": true },
@@ -38,6 +50,67 @@ const SYSTEM_PROMPT = `
     { "type": "mark_task_done", "matchTitle": "..." }
   ]
 }
+`.trim();
+
+const UNDERSTANDING_PROMPT = `
+你是用户的 AI 秘书。第一步只负责“完整理解用户输入”，不要做最终产品合并。
+
+重要规则：
+- 用户一句话里可能包含多个意图，必须逐一覆盖。
+- 不要只保留最后一个、最明显的、或最容易解析的意图。
+- 对每个意图判断它属于：待办、日程、购物、提醒、追问、长期记忆。
+- 如果信息不足，不要猜；生成 add_check_in 或在 feedback.question 中追问。
+- 这一阶段可以保留较细粒度动作；是否合并成一个主活动由第三步决定。
+- 输出必须是 JSON，不要 Markdown，不要解释。
+
+输出 JSON：
+{
+  "feedback": {
+    "title": "短标题",
+    "detail": "说明识别出了哪些意图",
+    "question": "可选追问"
+  },
+  "actions": [],
+  "memory_candidates": [],
+  "proactive_checkins": []
+}
+
+${ACTION_SCHEMA}
+`.trim();
+
+const COVERAGE_PROMPT = `
+你是 AI 秘书的覆盖率检查员。你的任务是检查第一步结果有没有漏掉 rawText 中的任何生活管理意图。
+
+规则：
+- 请检查 rawText 中的每个意图是否都被 actions 覆盖。
+- 如果有遗漏，指出遗漏，并补充 actions。
+- 不要删除已有正确 action。
+- 不要做最终产品合并；这一阶段只负责“没有遗漏”。
+- 如果信息不足，不要猜具体时间；补充 add_check_in 或在遗漏说明中指出需要追问。
+- 输出必须是 JSON，不要 Markdown，不要解释。
+
+输出 JSON：
+{
+  "coverage": "complete|incomplete",
+  "missing_intents": [],
+  "revised_actions": [],
+  "memory_candidates": [],
+  "proactive_checkins": []
+}
+
+${ACTION_SCHEMA}
+`.trim();
+
+const PLANNING_PROMPT = `
+你是面向个人生活管理产品的 AI 秘书规划器。你不会重新发现意图；你只把已经覆盖完整的理解结果，整理成产品最终要保存的结构化动作。
+
+必须只输出 JSON，不要 Markdown，不要解释。JSON 格式：
+{
+  "feedback": { "title": "短标题", "detail": "给用户看的简短反馈", "question": "可选追问" },
+  "actions": []
+}
+
+${ACTION_SCHEMA}
 
 产品行为规则：
 - 一个真实生活活动只生成一个主活动，不要把同一件事拆成多个并列待办。例如“周日去上海，在上海吃晚饭，准备高铁往返”是一个上海出行/吃饭活动，而不是“去上海”“在上海吃饭”“订高铁票”三个主事项。
@@ -54,6 +127,8 @@ const SYSTEM_PROMPT = `
 - 时间必须用 ISO 8601；无法确定具体时间时必须省略 dueAt/startsAt，并用 feedback.question 或 add_check_in 向用户澄清。
 - 不要编造 7:59、2:00、3:00 这类没有来源的时间。推断时间只能使用自然默认值：上午 9:00、下午 17:00、晚上 20:00、睡前提醒 21:30-22:30；否则省略。
 - “今天12点前睡觉”如果没有“中午/今晚/凌晨/24点/零点”等上下文，语义不清晰。不要默认中午 12 点；生成今日睡觉目标，并立刻追问用户希望几点睡、几点提醒。确认前不要设置具体 dueAt。
+- 第一、二步中出现的每个意图必须在最终结构中被保留：可以合并成主活动或附属 check-in，但不能消失。
+- memory_candidates 当前只作为理解上下文，不要伪造成无意义待办；如果对当下有主动提醒价值，可生成 add_check_in。
 - feedback.detail 要概括本次识别出的事项数量或主要类型，避免只提其中一个事项。
 - 不要输出 id，后端会生成。
 
@@ -126,6 +201,89 @@ function parseJsonObject(content: string) {
     throw new Error("Agent Plan response did not contain a JSON object.");
   }
   return JSON.parse(raw.slice(firstBrace, lastBrace + 1)) as unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function optionalString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function rawArray(value: unknown) {
+  return Array.isArray(value) ? value : [];
+}
+
+function readArray(record: Record<string, unknown>, snakeKey: string, camelKey: string) {
+  return rawArray(record[snakeKey] ?? record[camelKey]);
+}
+
+function normalizeActionArray(value: unknown) {
+  return normalizeAiInterpretation({
+    feedback: { title: "中间结果", detail: "中间结果" },
+    actions: rawArray(value)
+  })?.actions ?? [];
+}
+
+function normalizeIntentUnderstanding(value: unknown): IntentUnderstanding | null {
+  if (!isRecord(value)) return null;
+  const interpretation = normalizeAiInterpretation(value);
+  if (!interpretation) return null;
+
+  return {
+    feedback: interpretation.feedback,
+    actions: interpretation.actions,
+    memoryCandidates: readArray(value, "memory_candidates", "memoryCandidates"),
+    proactiveCheckins: readArray(value, "proactive_checkins", "proactiveCheckins")
+  };
+}
+
+function normalizeCoverageReview(value: unknown, fallback: IntentUnderstanding): CoverageReview | null {
+  if (!isRecord(value)) return null;
+  const missingIntents = stringArray(value.missing_intents ?? value.missingIntents);
+  const revisedSource = value.revised_actions ?? value.revisedActions ?? value.actions;
+  const revisedActions = revisedSource ? normalizeActionArray(revisedSource) : fallback.actions;
+  const coverage = optionalString(value.coverage) === "complete" && missingIntents.length === 0 ? "complete" : "incomplete";
+
+  return {
+    coverage,
+    missingIntents,
+    revisedActions,
+    memoryCandidates: readArray(value, "memory_candidates", "memoryCandidates"),
+    proactiveCheckins: readArray(value, "proactive_checkins", "proactiveCheckins")
+  };
+}
+
+async function requestAgentPlanJson({
+  model,
+  systemPrompt,
+  payload,
+  temperature = 0.2
+}: {
+  model: string;
+  systemPrompt: string;
+  payload: unknown;
+  temperature?: number;
+}) {
+  const response = await requestAgentPlanChatCompletion({
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: JSON.stringify(payload) }
+    ],
+    temperature,
+    response_format: { type: "json_object" }
+  });
+  const content = response.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error("Agent Plan returned an empty response.");
+  }
+  return parseJsonObject(content);
 }
 
 function actionText(action: InterpretAction) {
