@@ -1,4 +1,10 @@
-import { normalizeAiInterpretation, type AiInterpretation, type InterpretAction } from "@/lib/ai/interpretation";
+import {
+  normalizeAiInterpretation,
+  validateActionArraySchema,
+  validateAiInterpretationSchema,
+  type AiInterpretation,
+  type InterpretAction
+} from "@/lib/ai/interpretation";
 import { defaultAgentPlanLanguageModel, isAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { selectRelevantMemories } from "@/lib/memory/selectRelevantMemories";
 import { DEFAULT_TIMEZONE } from "@/lib/time/parseTime";
@@ -657,6 +663,8 @@ function rawActionSource(raw: unknown, key = "actions") {
 function validateNormalizedActionCount(raw: unknown, normalizedCount: number, key = "actions") {
   const source = rawActionSource(raw, key);
   if (!source.length) return [];
+  const schemaErrors = validateActionArraySchema(source, key);
+  if (schemaErrors.length) return schemaErrors;
   return source.length === normalizedCount
     ? []
     : [`${key} 中有 ${source.length - normalizedCount} 个 action 没有通过 schema 校验，不能被静默丢弃。`];
@@ -761,7 +769,7 @@ function validateCoreIntentCoverage(rawText: string, actions: InterpretAction[],
 
 function validateUnderstanding(rawText: string, understanding: IntentUnderstanding, raw: unknown) {
   return [
-    ...validateNormalizedActionCount(raw, understanding.actions.length),
+    ...validateAiInterpretationSchema(raw),
     ...validateCoreIntentCoverage(rawText, understanding.actions, understanding.feedback.question)
   ];
 }
@@ -787,7 +795,7 @@ function validateCoverage(rawText: string, coverage: CoverageReview, raw: unknow
 
 function validateFinalInterpretation(rawText: string, interpretation: AiInterpretation, raw?: unknown) {
   return [
-    ...(raw === undefined ? [] : validateNormalizedActionCount(raw, interpretation.actions.length)),
+    ...(raw === undefined ? [] : validateAiInterpretationSchema(raw)),
     ...validateCoreIntentCoverage(rawText, interpretation.actions, interpretation.feedback.question, true)
   ];
 }

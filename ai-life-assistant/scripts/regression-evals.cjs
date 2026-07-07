@@ -9,6 +9,7 @@ const jiti = require("../node_modules/.pnpm/jiti@1.21.7/node_modules/jiti")(__fi
 });
 
 const { applyInterpretation } = jiti("../src/lib/ai/applyInterpretation.ts");
+const { parseAiInterpretation, validateAiInterpretationSchema } = jiti("../src/lib/ai/interpretation.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
@@ -168,6 +169,37 @@ const evals = [
 
       assert.equal(result.shoppingItems.filter((item) => item.itemName === "牛奶").length, 1);
       assert.equal(activeTasks(result, /买牛奶/).length, 1);
+    }
+  },
+  {
+    name: "AI interpretation schema rejects malformed actions and memory writes",
+    run() {
+      const raw = {
+        feedback: { title: "已记录", detail: "已记录。" },
+        actions: [
+          { type: "add_task", priority: "urgent" },
+          { type: "update_shopping_status", itemName: "牛奶", status: "arriving" }
+        ],
+        memoryWrites: [
+          {
+            type: "recurring_pattern",
+            summary: "用户可能定期买牛奶。",
+            confidence: "high",
+            requiresConfirmation: "yes",
+            evidence: "用户又说要买牛奶"
+          }
+        ]
+      };
+
+      const parsed = parseAiInterpretation(raw);
+      const errors = validateAiInterpretationSchema(raw).join(" ");
+      assert.equal(parsed.value.actions.length, 0);
+      assert.equal(parsed.value.memoryWrites.length, 0);
+      assert.match(errors, /actions\[0\]\.title/);
+      assert.match(errors, /actions\[0\]\.priority/);
+      assert.match(errors, /actions\[1\]\.status/);
+      assert.match(errors, /memoryWrites\[0\]\.confidence/);
+      assert.match(errors, /memoryWrites\[0\]\.requiresConfirmation/);
     }
   }
 ];
