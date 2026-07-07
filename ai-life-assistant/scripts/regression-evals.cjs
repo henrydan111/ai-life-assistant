@@ -1290,8 +1290,8 @@ const evals = [
       const rawText = "我最近都希望每天能晚上12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶，我这周末另外要计划去上海";
       const parsed = parseAiInterpretation({
         feedback: {
-          title: "识别到3个待确认事项",
-          detail: "已识别三个事项。",
+          title: "周日下午2点待确认",
+          detail: "我已帮你设置明天中午提醒买牛奶，并把上海行程暂定为周日下午2点。",
           question:
             "请问以下信息是否正确：1. 你要设置的日常目标是【最近每天午夜12点前睡觉】对吗？2. 是否需要创建明天中午提醒你买牛奶的任务？3. 你本次去上海的开始时间为2026年7月12日周日下午2点对吗？"
         },
@@ -1382,7 +1382,12 @@ const evals = [
       assert.ok(shopping);
       assert.equal(shopping.dueAt, undefined);
       assert.match(result.interpretation.feedback.question ?? "", /上海|具体|哪天|几点|出发/);
-      assert.doesNotMatch(result.interpretation.feedback.question ?? "", /明天中午|周日下午2点|日常目标.*对吗/);
+      assert.doesNotMatch(
+        [result.interpretation.feedback.title, result.interpretation.feedback.detail, result.interpretation.feedback.question]
+          .filter(Boolean)
+          .join(" "),
+        /明天中午|周日下午2点|日常目标.*对吗/
+      );
       assert.equal(result.trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
       assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
     }
@@ -1657,6 +1662,71 @@ const evals = [
       }).state;
 
       assert.equal(second.checkIns.filter((checkIn) => checkIn.relatedType === "routine_goal" && checkIn.status === "pending").length, 1);
+    }
+  },
+  {
+    name: "AI interpretation apply layer keeps different clarification slots",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ]
+      });
+
+      const first = applyInterpretation("需要补充睡眠目标信息", "text", state, {
+        feedback: { title: "需要确认", detail: "需要补充睡眠目标信息。" },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认睡眠目标",
+            question: "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            clarification: { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
+          },
+          {
+            type: "add_check_in",
+            title: "确认睡眠目标",
+            question: "这个睡眠目标是先试一段时间，还是长期保持？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            clarification: { slot: "routine_goal_scope", targetField: "scope", expectedAnswerKind: "choice" }
+          }
+        ],
+        memoryWrites: []
+      }).state;
+
+      assert.equal(first.checkIns.filter((checkIn) => checkIn.relatedType === "routine_goal" && checkIn.status === "pending").length, 2);
+      assert.equal(first.checkIns.some((checkIn) => checkIn.clarification?.slot === "routine_goal_target_time"), true);
+      assert.equal(first.checkIns.some((checkIn) => checkIn.clarification?.slot === "routine_goal_scope"), true);
+
+      const second = applyInterpretation("重复生成睡眠目标时间确认", "text", first, {
+        feedback: { title: "需要确认", detail: "仍需确认睡眠目标时间。" },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认睡眠目标",
+            question: "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            clarification: { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
+          }
+        ],
+        memoryWrites: []
+      }).state;
+
+      assert.equal(second.checkIns.filter((checkIn) => checkIn.relatedType === "routine_goal" && checkIn.status === "pending").length, 2);
     }
   },
   {

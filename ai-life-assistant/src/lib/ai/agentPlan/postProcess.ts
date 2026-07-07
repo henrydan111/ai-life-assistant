@@ -300,47 +300,91 @@ function removeUnsupportedCoarseWeekendTravelTimes(rawText: string, interpretati
   return { ...interpretation, actions };
 }
 
-function hasUnsafeMilkReminderQuestion(rawText: string, question: string) {
-  return /牛奶/.test(rawText) && !hasExplicitReminderTime(rawText, /牛奶/) && /(明天中午|明天.*中午|中午.*牛奶|牛奶.*中午)/.test(question);
+type UnsafeFeedbackKind = "coarse_weekend_travel" | "milk_reminder" | "routine_goal_confirmation";
+
+function hasUnsafeMilkReminderText(rawText: string, text: string) {
+  return /牛奶/.test(rawText) && !hasExplicitReminderTime(rawText, /牛奶/) && /(明天中午|明天.*中午|中午.*牛奶|牛奶.*中午)/.test(text);
 }
 
-function hasUnsafeCoarseWeekendTravelQuestion(rawText: string, question: string) {
-  return rawHasCoarseWeekendTravel(rawText) && /(202\d|20\d{2}|周日|星期日|周天|星期天|下午\s*2\s*点|14:00|明天中午)/.test(question);
+function hasUnsafeCoarseWeekendTravelText(rawText: string, text: string) {
+  return rawHasCoarseWeekendTravel(rawText) && /(202\d|20\d{2}|周日|星期日|周天|星期天|下午\s*2\s*点|14:00|明天中午)/.test(text);
 }
 
-function safeClarificationQuestions(actions: InterpretAction[]) {
+function unsafeFeedbackKind(rawText: string, text?: string): UnsafeFeedbackKind | undefined {
+  if (!text) return undefined;
+  if (hasUnsafeCoarseWeekendTravelText(rawText, text)) return "coarse_weekend_travel";
+  if (hasUnsafeMilkReminderText(rawText, text)) return "milk_reminder";
+  if (
+    isExplicitRecentSleepGoal(rawText) &&
+    isRedundantRoutineScopeCheckIn({
+      type: "add_check_in",
+      title: "feedback",
+      question: text,
+      relatedType: "routine_goal",
+      relatedRef: "feedback"
+    })
+  ) {
+    return "routine_goal_confirmation";
+  }
+  return undefined;
+}
+
+function isSafeClarificationQuestion(question: string) {
+  return !/(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|周日下午2点|14:00)/.test(question);
+}
+
+function safeClarificationQuestions(actions: InterpretAction[], preferredSlot?: NonNullable<AssistantCheckIn["clarification"]>["slot"]) {
+  const checkIns = actions.filter((action): action is Extract<InterpretAction, { type: "add_check_in" }> => action.type === "add_check_in");
+  const preferred = preferredSlot
+    ? checkIns.find((action) => action.clarification?.slot === preferredSlot && isSafeClarificationQuestion(action.question))?.question
+    : undefined;
+  if (preferred) return [preferred];
   return actions
     .filter((action): action is Extract<InterpretAction, { type: "add_check_in" }> => action.type === "add_check_in")
     .map((action) => action.question)
-    .filter((question) => question && !/(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|周日下午2点|14:00)/.test(question));
+    .filter(isSafeClarificationQuestion);
 }
 
-function sanitizeFeedbackQuestion(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
-  const question = interpretation.feedback.question;
-  if (!question) return interpretation;
+function replacementQuestionForUnsafeFeedback(
+  unsafeKinds: UnsafeFeedbackKind[],
+  actions: InterpretAction[]
+) {
+  if (unsafeKinds.includes("coarse_weekend_travel")) {
+    return safeClarificationQuestions(actions, "life_event_time")[0];
+  }
+  if (unsafeKinds.includes("routine_goal_confirmation")) {
+    return safeClarificationQuestions(actions, "routine_goal_target_time")[0];
+  }
+  return safeClarificationQuestions(actions)[0];
+}
 
-  const unsafe =
-    (isExplicitRecentSleepGoal(rawText) && isRedundantRoutineScopeCheckIn({
-      type: "add_check_in",
-      title: "feedback",
-      question,
-      relatedType: "routine_goal",
-      relatedRef: "feedback"
-    })) ||
-    hasUnsafeMilkReminderQuestion(rawText, question) ||
-    hasUnsafeCoarseWeekendTravelQuestion(rawText, question);
-  if (!unsafe) return interpretation;
+function sanitizeFeedbackCopy(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
+  const titleKind = unsafeFeedbackKind(rawText, interpretation.feedback.title);
+  const detailKind = unsafeFeedbackKind(rawText, interpretation.feedback.detail);
+  const questionKind = unsafeFeedbackKind(rawText, interpretation.feedback.question);
+  const unsafeKinds = [titleKind, detailKind, questionKind].filter((kind): kind is UnsafeFeedbackKind => Boolean(kind));
+  if (!unsafeKinds.length) return interpretation;
 
-  const [replacement] = safeClarificationQuestions(interpretation.actions);
+  const replacement = questionKind ? replacementQuestionForUnsafeFeedback(unsafeKinds, interpretation.actions) : interpretation.feedback.question;
   const feedback = {
     ...interpretation.feedback,
-    question: replacement
+    title: titleKind ? "已整理事项" : interpretation.feedback.title,
+    detail: detailKind ? "我已按已确认的信息整理，并把不确定的部分留作确认。" : interpretation.feedback.detail,
+    question: questionKind ? replacement : interpretation.feedback.question
   };
   trace.push({
     rule: "feedback.repair.remove_unsafe_default_confirmation",
     severity: "repair",
-    before: { question },
-    after: replacement ? { question: replacement } : { question: undefined },
+    before: {
+      title: interpretation.feedback.title,
+      detail: interpretation.feedback.detail,
+      question: interpretation.feedback.question
+    },
+    after: {
+      title: feedback.title,
+      detail: feedback.detail,
+      question: feedback.question
+    },
     reason: "Feedback should not ask the user to confirm invented defaults or restate explicit routine goals."
   });
   return { ...interpretation, feedback };
@@ -526,7 +570,7 @@ export function postProcessAgentPlanInterpretationWithTrace(
   next = ensureMentionedTravelPrepCheckIns(rawText, next);
   next = ensureLeaveBossCheckIn(rawText, next);
   next = repairExistingRelatedRefs(state, next);
-  next = sanitizeFeedbackQuestion(rawText, next, trace);
+  next = sanitizeFeedbackCopy(rawText, next, trace);
   return {
     interpretation: {
       ...next,

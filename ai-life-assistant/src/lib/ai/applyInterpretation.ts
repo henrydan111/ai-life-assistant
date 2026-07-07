@@ -106,14 +106,23 @@ function findSimilarCheckIn(
   title: string,
   question: string,
   relatedType: AssistantCheckIn["relatedType"],
-  relatedId: string
+  relatedId: string,
+  clarification?: AssistantCheckIn["clarification"]
 ) {
   return checkIns.find(
-    (checkIn) =>
-      checkIn.status === "pending" &&
-      checkIn.relatedType === relatedType &&
-      checkIn.relatedId === relatedId &&
-      (similar(checkIn.question, question) || similar(checkIn.title, title))
+    (checkIn) => {
+      if (checkIn.status !== "pending" || checkIn.relatedType !== relatedType || checkIn.relatedId !== relatedId) {
+        return false;
+      }
+      if (checkIn.clarification || clarification) {
+        return (
+          checkIn.clarification?.slot === clarification?.slot &&
+          checkIn.clarification?.targetField === clarification?.targetField &&
+          checkIn.clarification?.expectedAnswerKind === clarification?.expectedAnswerKind
+        );
+      }
+      return similar(checkIn.question, question) || similar(checkIn.title, title);
+    }
   );
 }
 
@@ -497,7 +506,7 @@ export function applyInterpretation(
       const relatedType = action.relatedType;
       const relatedId = action.relatedId ?? (action.relatedRef ? refs[action.relatedRef] : undefined) ?? (relatedType === "project" ? "assistant" : undefined);
       if (!relatedId) return;
-      if (findSimilarCheckIn(next.checkIns, action.title, action.question, relatedType, relatedId)) {
+      if (findSimilarCheckIn(next.checkIns, action.title, action.question, relatedType, relatedId, action.clarification)) {
         return;
       }
       next = {
