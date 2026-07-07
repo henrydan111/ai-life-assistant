@@ -2,6 +2,8 @@
 
 Status: design proposal for round 2 review
 
+Round 2 decision record: see `docs/agent-plan-v3-round2-decisions.md` for the accepted revisions, especially the narrower migration plan: Phase 0 runtime safety first, Phase 1 IntentFrame shadow mode, Phase 2 ProductCompiler to current `AiInterpretation`, and `MutationPlan` only after compiler behavior is proven.
+
 Baseline reviewed: `5ceeb7f Support routine goals in Agent Plan`
 
 Date: 2026-07-07
