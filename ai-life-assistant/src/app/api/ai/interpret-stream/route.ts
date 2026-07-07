@@ -18,6 +18,7 @@ type InterpretRequest = {
   state?: AssistantState;
   clientRequestId?: string;
   baseRevision?: number;
+  debugTrace?: boolean;
 };
 
 type StreamMessage =
@@ -45,6 +46,17 @@ function requestMeta(body: InterpretRequest) {
     clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : undefined,
     baseRevision: typeof body.baseRevision === "number" ? body.baseRevision : undefined
   };
+}
+
+function confirmationTraceMeta(body: InterpretRequest, confirmation: ReturnType<typeof resolvePendingConfirmations>) {
+  return body.debugTrace === true && confirmation?.confirmationTrace
+    ? { confirmationTrace: confirmation.confirmationTrace }
+    : {};
+}
+
+function withoutConfirmationTrace<T extends { confirmationTrace?: unknown }>(value: T) {
+  const { confirmationTrace: _confirmationTrace, ...rest } = value;
+  return rest;
 }
 
 export async function POST(request: Request) {
@@ -101,7 +113,8 @@ export async function POST(request: Request) {
           });
           streamLine(controller, encoder, {
             type: "result",
-            ...confirmation,
+            ...withoutConfirmationTrace(confirmation),
+            ...confirmationTraceMeta(body, confirmation),
             ...meta,
             provider: "local_confirmation_resolver"
           });
@@ -143,7 +156,7 @@ export async function POST(request: Request) {
             ...result,
             ...meta,
             feedback,
-            confirmationTrace: confirmation?.confirmationTrace,
+            ...confirmationTraceMeta(body, confirmation),
             provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
           });
           return;
@@ -185,7 +198,7 @@ export async function POST(request: Request) {
           ...result,
           ...meta,
           feedback,
-          confirmationTrace: confirmation?.confirmationTrace,
+          ...confirmationTraceMeta(body, confirmation),
           type: "result",
           provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
           model: resolveAgentPlanLanguageModel(model)
@@ -207,7 +220,8 @@ export async function POST(request: Request) {
             detail: result.feedback.detail
           });
           streamLine(controller, encoder, {
-            ...result,
+            ...withoutConfirmationTrace(result),
+            ...confirmationTraceMeta(body, confirmationForFallback),
             ...meta,
             type: "result",
             provider: "local_confirmation_resolver"

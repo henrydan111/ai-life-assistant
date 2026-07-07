@@ -581,7 +581,8 @@ async function postStream({ baseUrl, rawText, state, inputType = "text" }) {
         state,
         model: state.preferences.languageModel,
         clientRequestId,
-        baseRevision
+        baseRevision,
+        debugTrace: true
       }),
       signal: controller.signal
     });

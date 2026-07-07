@@ -17,6 +17,7 @@ type InterpretRequest = {
   state?: AssistantState;
   clientRequestId?: string;
   baseRevision?: number;
+  debugTrace?: boolean;
 };
 
 function isValidRequest(body: unknown): body is InterpretRequest {
@@ -36,6 +37,17 @@ function requestMeta(body: InterpretRequest) {
     clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : undefined,
     baseRevision: typeof body.baseRevision === "number" ? body.baseRevision : undefined
   };
+}
+
+function confirmationTraceMeta(body: InterpretRequest, confirmation: ReturnType<typeof resolvePendingConfirmations>) {
+  return body.debugTrace === true && confirmation?.confirmationTrace
+    ? { confirmationTrace: confirmation.confirmationTrace }
+    : {};
+}
+
+function withoutConfirmationTrace<T extends { confirmationTrace?: unknown }>(value: T) {
+  const { confirmationTrace: _confirmationTrace, ...rest } = value;
+  return rest;
 }
 
 export async function POST(request: Request) {
@@ -59,7 +71,8 @@ export async function POST(request: Request) {
   });
   if (confirmation && !confirmation.unhandledText) {
     return NextResponse.json({
-      ...confirmation,
+      ...withoutConfirmationTrace(confirmation),
+      ...confirmationTraceMeta(body, confirmation),
       ...meta,
       provider: "local_confirmation_resolver"
     });
@@ -80,7 +93,7 @@ export async function POST(request: Request) {
       ...result,
       ...meta,
       feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
-      confirmationTrace: confirmation?.confirmationTrace,
+      ...confirmationTraceMeta(body, confirmation),
       provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
     });
   }
@@ -101,7 +114,7 @@ export async function POST(request: Request) {
       ...result,
       ...meta,
       feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
-      confirmationTrace: confirmation?.confirmationTrace,
+      ...confirmationTraceMeta(body, confirmation),
       provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
       model: resolveAgentPlanLanguageModel(body.model)
     });
@@ -109,7 +122,8 @@ export async function POST(request: Request) {
     console.warn("Agent Plan interpretation failed.", error);
     if (confirmation) {
       return NextResponse.json({
-        ...confirmation,
+        ...withoutConfirmationTrace(confirmation),
+        ...confirmationTraceMeta(body, confirmation),
         ...meta,
         feedback: {
           title: "已更新确认信息",

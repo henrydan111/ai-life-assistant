@@ -101,6 +101,50 @@ function findSimilarRoutineGoal(
   });
 }
 
+type CheckInClarification = NonNullable<AssistantCheckIn["clarification"]>;
+
+function inferredLegacyClarification(
+  relatedType: AssistantCheckIn["relatedType"],
+  title: string,
+  question: string,
+  clarification?: AssistantCheckIn["clarification"]
+): CheckInClarification | undefined {
+  if (clarification) return clarification;
+  const text = [title, question].filter(Boolean).join(" ");
+  if (
+    relatedType === "routine_goal" &&
+    /(12\s*点|十二点|中午|午夜|半夜|晚上|凌晨|目标时间|几点前|几点睡)/.test(text)
+  ) {
+    return { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" };
+  }
+  if (
+    relatedType === "routine_goal" &&
+    /(短期|长期|试一段时间|持续多久|生效范围|范围|最近|保持)/.test(text)
+  ) {
+    return { slot: "routine_goal_scope", targetField: "scope", expectedAnswerKind: "choice" };
+  }
+  if (
+    relatedType === "life_event" &&
+    /(哪天|几点|什么时候|具体.*时间|出发|出行时间|开始时间|日期|时间)/.test(text)
+  ) {
+    return { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" };
+  }
+  return undefined;
+}
+
+function sameClarification(
+  left?: CheckInClarification,
+  right?: CheckInClarification
+) {
+  return Boolean(
+    left &&
+      right &&
+      left.slot === right.slot &&
+      left.targetField === right.targetField &&
+      left.expectedAnswerKind === right.expectedAnswerKind
+  );
+}
+
 function findSimilarCheckIn(
   checkIns: AssistantCheckIn[],
   title: string,
@@ -115,10 +159,9 @@ function findSimilarCheckIn(
         return false;
       }
       if (checkIn.clarification || clarification) {
-        return (
-          checkIn.clarification?.slot === clarification?.slot &&
-          checkIn.clarification?.targetField === clarification?.targetField &&
-          checkIn.clarification?.expectedAnswerKind === clarification?.expectedAnswerKind
+        return sameClarification(
+          inferredLegacyClarification(checkIn.relatedType, checkIn.title, checkIn.question, checkIn.clarification),
+          inferredLegacyClarification(relatedType, title, question, clarification)
         );
       }
       return similar(checkIn.question, question) || similar(checkIn.title, title);

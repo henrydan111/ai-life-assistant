@@ -1,7 +1,12 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
+import {
+  applyRoutineGoalPolicy,
+  isExplicitRecentSleepGoal,
+  isRedundantRoutineScopeCheckIn
+} from "@/lib/ai/productCompiler/policies/routineGoalPolicy";
 import type { AssistantCheckIn, AssistantState } from "@/types/domain";
 import { actionText } from "./actionText";
-import { rawHasRecurringSleepGoal, resolveRecurringSleepTarget } from "./temporalPolicy";
+import { actionRefs, ensureActionRef } from "./actionRefs";
 import type { PlanTrace } from "./types";
 import {
   containsMultipleTravelPrepCategories,
@@ -9,38 +14,6 @@ import {
   splitCombinedTravelPrepCheckIns,
   travelPrepCategoriesIn
 } from "./travelPrepPolicy";
-
-function uniqueRef(actions: InterpretAction[], base: string) {
-  const refs = new Set(actions.flatMap((action) => ("ref" in action && action.ref ? [action.ref] : [])));
-  if (!refs.has(base)) return base;
-  let index = 2;
-  while (refs.has(`${base}_${index}`)) index += 1;
-  return `${base}_${index}`;
-}
-
-function ensureActionRef(actions: InterpretAction[], index: number, base: string) {
-  const action = actions[index];
-  if (
-    !action ||
-    (action.type !== "add_task" &&
-      action.type !== "add_life_event" &&
-      action.type !== "add_shopping_item" &&
-      action.type !== "add_routine_goal")
-  ) {
-    return { actions, ref: undefined };
-  }
-  if (action.ref) return { actions, ref: action.ref };
-
-  const ref = uniqueRef(actions, base);
-  return {
-    actions: actions.map((item, itemIndex) => (itemIndex === index ? ({ ...item, ref } as InterpretAction) : item)),
-    ref
-  };
-}
-
-function actionRefs(actions: InterpretAction[]) {
-  return new Set(actions.flatMap((action) => ("ref" in action && action.ref ? [action.ref] : [])));
-}
 
 function repairExistingRelatedRefs(state: AssistantState, interpretation: AiInterpretation): AiInterpretation {
   const refs = actionRefs(interpretation.actions);
@@ -105,32 +78,6 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
   return { ...interpretation, actions };
 }
 
-function isSleepGoalTask(action: InterpretAction) {
-  return action.type === "add_task" && /(睡觉|上床|入睡|休息)/.test(actionText(action));
-}
-
-function isRecurringSleepTask(action: InterpretAction) {
-  return (
-    isSleepGoalTask(action) &&
-    /(每天|每日|天天|每晚|daily|every day|every night)/i.test(actionText(action)) &&
-    /(睡觉|上床|入睡|休息)/.test(actionText(action))
-  );
-}
-
-function isExplicitRecentSleepGoal(rawText: string) {
-  if (!rawHasRecurringSleepGoal(rawText) || !/(最近|近期|这段时间)/.test(rawText)) return false;
-  return resolveRecurringSleepTarget(rawText).ambiguity === "none";
-}
-
-function isRedundantRoutineScopeCheckIn(action: InterpretAction) {
-  return (
-    action.type === "add_check_in" &&
-    action.relatedType === "routine_goal" &&
-    (action.clarification?.slot === "routine_goal_scope" ||
-      /(对吗|是否.*(设置|记录|保存)|确认.*(目标内容|日常目标)|短期|长期|试一段时间|持续多久|生效范围|范围)/.test(actionText(action)))
-  );
-}
-
 function segmentMentioning(rawText: string, pattern: RegExp) {
   return rawText.split(/然后|另外|还有|并且|到时候|[，。,.!?！？；;]/).find((segment) => pattern.test(segment)) ?? rawText;
 }
@@ -148,73 +95,16 @@ function rawHasCoarseWeekendTravel(rawText: string) {
   );
 }
 
-function removeDuplicateRecurringSleepTasks(actions: InterpretAction[], trace: PlanTrace[], removeAnySleepTask = false) {
-  return actions.filter((action) => {
-    if (!(removeAnySleepTask ? isSleepGoalTask(action) : isRecurringSleepTask(action))) return true;
-    trace.push({
-      rule: "routine.repair.remove_duplicate_task",
-      severity: "repair",
-      before: action,
-      reason: removeAnySleepTask
-        ? "Raw input is already represented as a recurring sleep RoutineGoal, so a parallel sleep Task would duplicate the goal."
-        : "Recurring sleep goals should be represented as RoutineGoal, not as a one-time Task."
-    });
-    return false;
-  });
-}
+type UnsafeFeedbackKind = "coarse_weekend_travel" | "milk_reminder" | "routine_goal_confirmation";
 
-function ensureRoutineCheckIn(
-  actions: InterpretAction[],
-  ref: string,
-  title: string,
-  question: string,
-  trace: PlanTrace[],
-  rule: string,
-  existingPattern: RegExp,
-  clarification?: AssistantCheckIn["clarification"]
-): InterpretAction[] {
-  const exists = actions.some(
-    (action) => {
-      if (action.type !== "add_check_in" || action.relatedType !== "routine_goal" || action.relatedRef !== ref) return false;
-      if (clarification && action.clarification?.slot === clarification.slot) return true;
-      const isLegacyMatch = !action.clarification && (action.question === question || existingPattern.test(actionText(action)));
-      if (clarification?.slot === "routine_goal_scope" && isRedundantRoutineScopeCheckIn(action)) return false;
-      return isLegacyMatch;
-    }
-  );
-  if (exists) return actions;
+const unsafeMilkReminderTimePattern =
+  /(明天\s*(?:中午|12\s*点|十二点|午饭前|午餐前)|(?:中午|12\s*点|十二点|午饭前|午餐前).*牛奶|牛奶.*(?:中午|12\s*点|十二点|午饭前|午餐前))/;
 
-  trace.push({
-    rule,
-    severity: "clarification",
-    after: { title, question, relatedType: "routine_goal", relatedRef: ref },
-    reason: "Routine goal has a safe-to-save missing slot that should be clarified instead of guessed."
-  });
-  const checkIn: InterpretAction = {
-    type: "add_check_in",
-    title,
-    question,
-    relatedType: "routine_goal",
-    relatedRef: ref,
-    clarification
-  };
-  return [...actions, checkIn];
-}
+const unsafeCoarseWeekendTravelTimePattern =
+  /(202\d|20\d{2}|(?:\d{1,2}|[一二三四五六七八九十]{1,3})月(?:\d{1,2}|[一二三四五六七八九十]{1,3})[日号]|本?周日|星期日|周天|星期天|下午\s*(?:2|二|两)\s*点(?:半|三十)?|14\s*(?::|：|点)\s*(?:00|30|半)?|明天\s*(?:中午|12\s*点|十二点))/;
 
-function removeRedundantRoutineScopeCheckIns(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
-  if (!isExplicitRecentSleepGoal(rawText)) return interpretation;
-  const actions = interpretation.actions.filter((action) => {
-    if (!isRedundantRoutineScopeCheckIn(action)) return true;
-    trace.push({
-      rule: "clarification.repair.remove_redundant_routine_scope_question",
-      severity: "repair",
-      before: action,
-      reason: "The user already supplied an explicit recent routine goal, so asking whether it is short-term or long-term adds friction."
-    });
-    return false;
-  });
-  return actions.length === interpretation.actions.length ? interpretation : { ...interpretation, actions };
-}
+const unsafeClarificationQuestionPattern =
+  /(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|明天\s*(?:12\s*点|十二点|午饭前|午餐前)|周日下午2点|本?周日\s*14\s*点|下午\s*(?:2|二|两)\s*点|14\s*(?::|：|点)\s*(?:00|30|半)?)/;
 
 function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
   if (!/牛奶/.test(rawText) || !/(买|需要|没有|没了|缺|快没了|提醒)/.test(rawText) || hasExplicitReminderTime(rawText, /牛奶/)) {
@@ -247,6 +137,32 @@ function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiI
     return action;
   });
 
+  return { ...interpretation, actions };
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function ensureShoppingPurchaseTasks(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
+  const actions = interpretation.actions.map((action) => {
+    if (action.type !== "add_shopping_item" || action.createTask || (action.status && action.status !== "needed")) {
+      return action;
+    }
+    const segment = segmentMentioning(rawText, new RegExp(escapeRegExp(action.itemName)));
+    if (!/(提醒|买|购买|采购|需要|没有|没了|缺|快没了|补货)/.test(segment) || /(不要|不用|别|取消|不需要)/.test(segment)) {
+      return action;
+    }
+    const repaired = { ...action, createTask: true };
+    trace.push({
+      rule: "shopping.repair.ensure_purchase_task",
+      severity: "repair",
+      before: action,
+      after: repaired,
+      reason: "The user expressed a shopping purchase/reminder need, so the shopping item should also appear as an actionable task."
+    });
+    return repaired;
+  });
   return { ...interpretation, actions };
 }
 
@@ -295,19 +211,30 @@ function removeUnsupportedCoarseWeekendTravelTimes(rawText: string, interpretati
     actions = actions.map((action, index) => (index === eventIndex ? repaired : action));
   }
 
+  actions = actions.filter((action) => {
+    if (action.type !== "add_check_in" || action.relatedType !== "life_event") return true;
+    if (action.relatedRef !== eventRef && !/(上海|周末|出行|旅行)/.test(actionText(action))) return true;
+    if (!unsafeCoarseWeekendTravelTimePattern.test(actionText(action))) return true;
+    trace.push({
+      rule: "temporal.repair.remove_unsupported_weekend_travel_check_in_time",
+      severity: "repair",
+      before: action,
+      reason: "The user gave only a coarse weekend travel window, so confirmation copy must not include an invented concrete day or time."
+    });
+    return false;
+  });
+
   const location = event.location ?? (event.title.replace(/^.*去/, "") || "目的地");
   actions = ensureCoarseWeekendTravelCheckIn(actions, eventRef, location);
   return { ...interpretation, actions };
 }
 
-type UnsafeFeedbackKind = "coarse_weekend_travel" | "milk_reminder" | "routine_goal_confirmation";
-
 function hasUnsafeMilkReminderText(rawText: string, text: string) {
-  return /牛奶/.test(rawText) && !hasExplicitReminderTime(rawText, /牛奶/) && /(明天中午|明天.*中午|中午.*牛奶|牛奶.*中午)/.test(text);
+  return /牛奶/.test(rawText) && !hasExplicitReminderTime(rawText, /牛奶/) && unsafeMilkReminderTimePattern.test(text);
 }
 
 function hasUnsafeCoarseWeekendTravelText(rawText: string, text: string) {
-  return rawHasCoarseWeekendTravel(rawText) && /(202\d|20\d{2}|周日|星期日|周天|星期天|下午\s*2\s*点|14:00|明天中午)/.test(text);
+  return rawHasCoarseWeekendTravel(rawText) && unsafeCoarseWeekendTravelTimePattern.test(text);
 }
 
 function unsafeFeedbackKind(rawText: string, text?: string): UnsafeFeedbackKind | undefined {
@@ -330,7 +257,7 @@ function unsafeFeedbackKind(rawText: string, text?: string): UnsafeFeedbackKind 
 }
 
 function isSafeClarificationQuestion(question: string) {
-  return !/(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|周日下午2点|14:00)/.test(question);
+  return !unsafeClarificationQuestionPattern.test(question);
 }
 
 function safeClarificationQuestions(actions: InterpretAction[], preferredSlot?: NonNullable<AssistantCheckIn["clarification"]>["slot"]) {
@@ -390,127 +317,6 @@ function sanitizeFeedbackCopy(rawText: string, interpretation: AiInterpretation,
   return { ...interpretation, feedback };
 }
 
-function normalizeRoutineGoalAction(
-  rawText: string,
-  action: Extract<InterpretAction, { type: "add_routine_goal" }>,
-  trace: PlanTrace[]
-): Extract<InterpretAction, { type: "add_routine_goal" }> {
-  const resolution = resolveRecurringSleepTarget(rawText);
-  const isRecent = /最近|近期|这段时间/.test(rawText);
-  let normalized: Extract<InterpretAction, { type: "add_routine_goal" }> = {
-    ...action,
-    cadence: "daily",
-    targetTime: resolution.ambiguity === "ampm" ? undefined : (resolution.targetTime ?? action.targetTime),
-    targetTimeRelation:
-      resolution.ambiguity === "ampm" ? undefined : (resolution.targetTimeRelation ?? action.targetTimeRelation),
-    scope: isRecent && (!action.scope || action.scope === "unspecified") ? "recent" : action.scope,
-    scopeLabel: isRecent ? "最近" : action.scopeLabel
-  };
-
-  if (resolution.evidence === "explicit_midnight" && action.targetTime && action.targetTime !== "00:00") {
-    trace.push({
-      rule: "temporal.sleep.explicit_midnight_repair",
-      severity: "repair",
-      sourceQuote: resolution.sourceQuote,
-      before: { targetTime: action.targetTime },
-      after: { targetTime: "00:00" },
-      reason: "Raw text explicitly points to midnight or 24:00."
-    });
-    normalized = {
-      ...normalized,
-      targetTime: "00:00",
-      targetTimeRelation: resolution.targetTimeRelation ?? action.targetTimeRelation ?? "before"
-    };
-  }
-
-  if (resolution.ambiguity === "ampm" && action.targetTime) {
-    trace.push({
-      rule: "temporal.sleep.bare_12_requires_clarification",
-      severity: "clarification",
-      sourceQuote: resolution.sourceQuote,
-      before: { targetTime: action.targetTime },
-      after: { targetTime: undefined },
-      reason: "Bare sleep time '12点前' should not be silently saved as noon or midnight."
-    });
-  }
-
-  return normalized;
-}
-
-function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
-  if (!rawHasRecurringSleepGoal(rawText)) return interpretation;
-  const isRecent = /最近|近期|这段时间/.test(rawText);
-  const resolution = resolveRecurringSleepTarget(rawText);
-  const existingIndex = interpretation.actions.findIndex(
-    (action) => action.type === "add_routine_goal" && /(睡觉|睡|上床|休息)/.test(actionText(action))
-  );
-
-  if (existingIndex >= 0) {
-    let actions = interpretation.actions.map((action, index) => {
-      if (index !== existingIndex || action.type !== "add_routine_goal") return action;
-      return normalizeRoutineGoalAction(rawText, action, trace);
-    });
-
-    const withRef = ensureActionRef(actions, existingIndex, "sleep_routine");
-    actions = withRef.actions;
-    const ref = withRef.ref;
-    if (ref && resolution.ambiguity === "ampm") {
-      actions = ensureRoutineCheckIn(
-        actions,
-        ref,
-        "确认睡眠目标时间",
-        resolution.question ?? "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
-        trace,
-        "clarification.compiler.create_sleep_time_question",
-        /(中午|午夜|晚上|半夜|12点|十二点)/,
-        { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
-      );
-    }
-    actions = removeDuplicateRecurringSleepTasks(actions, trace, Boolean(ref));
-    return { ...interpretation, actions };
-  }
-
-  let actions = interpretation.actions;
-  const ref = uniqueRef(actions, "sleep_routine");
-  const targetTime = resolution.ambiguity === "ampm" ? undefined : resolution.targetTime;
-  actions = [
-    {
-      type: "add_routine_goal",
-      ref,
-      title: targetTime ? `每天 ${targetTime} 前睡觉` : "每天按时睡觉",
-      cadence: "daily",
-      targetTime,
-      targetTimeRelation: targetTime ? (resolution.targetTimeRelation ?? "before") : undefined,
-      scope: isRecent ? "recent" : "ongoing",
-      scopeLabel: isRecent ? "最近" : undefined,
-      priority: "medium"
-    },
-    ...actions
-  ];
-  trace.push({
-    rule: "routine.compiler.create_goal",
-    severity: "info",
-    sourceQuote: rawText,
-    after: actions[0],
-    reason: "Raw text contains a recurring sleep goal that should be represented as a RoutineGoal."
-  });
-
-  if (resolution.ambiguity === "ampm") {
-    actions = ensureRoutineCheckIn(
-      actions,
-      ref,
-      "确认睡眠目标时间",
-      resolution.question ?? "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
-      trace,
-      "clarification.compiler.create_sleep_time_question",
-      /(中午|午夜|晚上|半夜|12点|十二点)/,
-      { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
-    );
-  }
-  actions = removeDuplicateRecurringSleepTasks(actions, trace, true);
-  return { ...interpretation, actions };
-}
-
 function ensureLeaveBossCheckIn(rawText: string, interpretation: AiInterpretation): AiInterpretation {
   if (!/请假/.test(rawText) || !/(老板|领导|提前|提醒)/.test(rawText)) return interpretation;
 
@@ -562,9 +368,9 @@ export function postProcessAgentPlanInterpretationWithTrace(
 ) {
   const trace: PlanTrace[] = [...(interpretation.planTrace ?? [])];
   let next = splitCombinedTravelPrepCheckIns(interpretation);
-  next = ensureRecurringSleepGoal(rawText, next, trace);
-  next = removeRedundantRoutineScopeCheckIns(rawText, next, trace);
+  next = applyRoutineGoalPolicy(rawText, next, trace);
   next = removeUnsupportedMilkReminderTimes(rawText, next, trace);
+  next = ensureShoppingPurchaseTasks(rawText, next, trace);
   next = removeUnsupportedCoarseWeekendTravelTimes(rawText, next, trace);
   next = ensureMentionedTravelDraft(rawText, next);
   next = ensureMentionedTravelPrepCheckIns(rawText, next);

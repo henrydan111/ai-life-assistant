@@ -1339,8 +1339,8 @@ const evals = [
       const rawText = "我最近都希望每天能晚上12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶，我这周末另外要计划去上海";
       const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
         feedback: {
-          title: "识别到3个待确认事项",
-          detail: "已识别三个事项。",
+          title: "周日下午2点待确认",
+          detail: "我已帮你设置明天中午提醒买牛奶，并把上海行程暂定为周日下午2点。",
           question:
             "请问以下信息是否正确：1. 你要设置的日常目标是【最近每天午夜12点前睡觉】对吗？2. 是否需要创建明天中午提醒你买牛奶的任务？3. 你本次去上海的开始时间为2026年7月12日周日下午2点对吗？"
         },
@@ -1389,6 +1389,98 @@ const evals = [
         /明天中午|周日下午2点|日常目标.*对吗/
       );
       assert.equal(result.trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing sanitizes unsafe default confirmation variants",
+    run() {
+      const rawText = "家里牛奶快没了，提醒我要买牛奶。我这周末计划要去上海";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: {
+          title: "本周日14点半待确认",
+          detail: "我已帮你设置明天12点买牛奶，并把上海行程暂定为7月12日下午两点。",
+          question: "是否需要明天午饭前提醒买牛奶？上海行程是本周日14点吗？"
+        },
+        actions: [
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed",
+            createTask: true,
+            dueAt: "2026-07-08T12:00:00+08:00"
+          },
+          {
+            type: "add_life_event",
+            ref: "shanghai_trip",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            startsAt: "2026-07-12T14:30:00+08:00"
+          },
+          {
+            type: "add_check_in",
+            title: "确认上海时间",
+            question: "你本周日14点去上海对吗？",
+            relatedType: "life_event",
+            relatedRef: "shanghai_trip"
+          },
+          {
+            type: "add_check_in",
+            title: "确认出行时间",
+            question: "这周末去上海，具体是哪天、几点出发？",
+            relatedType: "life_event",
+            relatedRef: "shanghai_trip",
+            clarification: { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" }
+          }
+        ],
+        memoryWrites: []
+      });
+      const visibleFeedback = [
+        result.interpretation.feedback.title,
+        result.interpretation.feedback.detail,
+        result.interpretation.feedback.question
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const event = result.interpretation.actions.find((action) => action.type === "add_life_event" && /上海/.test(actionText(action)));
+      const shopping = result.interpretation.actions.find((action) => action.type === "add_shopping_item" && /牛奶/.test(actionText(action)));
+
+      assert.ok(event);
+      assert.equal(event.startsAt, undefined);
+      assert.ok(shopping);
+      assert.equal(shopping.dueAt, undefined);
+      assert.match(result.interpretation.feedback.question ?? "", /上海|具体|哪天|几点|出发/);
+      assert.equal(result.interpretation.actions.some((action) => /本周日14点|下午两点|7月12日/.test(actionText(action))), false);
+      assert.doesNotMatch(visibleFeedback, /明天12点|午饭前|下午两点|14点半|7月12日|本周日14点/);
+      assert.equal(result.trace.some((item) => item.rule === "temporal.repair.remove_unsupported_weekend_travel_check_in_time"), true);
+      assert.equal(result.trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing keeps shopping reminders actionable",
+    run() {
+      const rawText = "家里牛奶快没了，提醒我要买牛奶";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已记录", detail: "已记录买牛奶。" },
+        actions: [
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed"
+          }
+        ],
+        memoryWrites: []
+      });
+      const shopping = result.interpretation.actions.find((action) => action.type === "add_shopping_item" && /牛奶/.test(action.itemName));
+
+      assert.ok(shopping);
+      assert.equal(shopping.createTask, true);
+      assert.equal(shopping.dueAt, undefined);
+      assert.equal(result.trace.some((item) => item.rule === "shopping.repair.ensure_purchase_task"), true);
       assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
     }
   },
@@ -1727,6 +1819,57 @@ const evals = [
       }).state;
 
       assert.equal(second.checkIns.filter((checkIn) => checkIn.relatedType === "routine_goal" && checkIn.status === "pending").length, 2);
+    }
+  },
+  {
+    name: "AI interpretation apply layer dedupes legacy and metadata clarification slots",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "legacy_target_time_check",
+            title: "确认睡眠目标",
+            question: "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const result = applyInterpretation("重复生成带 metadata 的睡眠目标时间确认", "text", state, {
+        feedback: { title: "需要确认", detail: "仍需确认睡眠目标时间。" },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认睡眠目标时间",
+            question: "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            clarification: { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
+          }
+        ],
+        memoryWrites: []
+      }).state;
+
+      assert.equal(result.checkIns.filter((checkIn) => checkIn.relatedType === "routine_goal" && checkIn.status === "pending").length, 1);
+      assert.equal(result.checkIns[0].id, "legacy_target_time_check");
     }
   },
   {
