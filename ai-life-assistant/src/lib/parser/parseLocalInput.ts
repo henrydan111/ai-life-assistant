@@ -21,7 +21,8 @@ const doneWords = /\b(done|finished|completed|bought|ordered)\b|完成了|做完
 const travelWords = /\b(go to|travel to|trip to|visit)\b|去|出差|出游|旅行/;
 const classWords = /class|lesson|兴趣班|补习|课程|接送/;
 const taskIntentWords = /\b(send|finish|call|email|review|remind|complete|prepare|write)\b|完成|发送|打电话|整理|准备|写/;
-const noOpWords = /^(谢谢|谢了|谢啦|不用了|不用|没事了|算了|先不用|先别|刚才说错了|说错了|不是这个意思|ok|okay|thanks|thank you|never mind|nevermind|cancel that)$/i;
+const noOpWords = /^(谢谢|谢了|谢啦|好的|好|收到|嗯|嗯嗯|行|可以|没问题|不用了|不用|没事了|算了|先不用|先别|刚才说错了|说错了|不是这个意思|ok|okay|ok好的|thanks|thank you|never mind|nevermind|cancel that)$/i;
+const noOpTokens = /^(谢谢|谢了|谢啦|好的|好|收到|嗯|嗯嗯|行|可以|没问题|不用了|不用|没事了|算了|ok|okay|thanks)$/i;
 
 function normalize(text: string) {
   return text.trim().toLowerCase().replace(/[，。,.!?！？]/g, " ");
@@ -71,6 +72,10 @@ function titleCase(text: string) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function shoppingTaskTitle(itemName: string) {
+  return /[\u4e00-\u9fa5]/.test(itemName) ? `买${itemName}` : `Buy ${itemName}`;
+}
+
 function similar(a: string, b: string) {
   const left = normalize(a);
   const right = normalize(b);
@@ -92,6 +97,23 @@ function findOpenTask(tasks: Task[], title: string, dueAt?: string) {
       task.status !== "cancelled" &&
       similar(task.title, title) &&
       sameDueWindow(task.dueAt, dueAt)
+  );
+}
+
+function shouldCloseShoppingTask(task: Task, itemName: string) {
+  if (task.status === "done" || task.status === "cancelled") return false;
+  return (
+    similar(task.title, itemName) &&
+    (similar(task.title, shoppingTaskTitle(itemName)) || /\b(buy|get|pick up|order)\b|买|采购|下单/.test(normalize(task.title)))
+  );
+}
+
+function closeShoppingTasks(tasks: Task[], itemNames: string[], now: string) {
+  if (!itemNames.length) return tasks;
+  return tasks.map((task) =>
+    itemNames.some((itemName) => shouldCloseShoppingTask(task, itemName))
+      ? { ...task, status: "done" as const, updatedAt: now }
+      : task
   );
 }
 
@@ -184,7 +206,7 @@ function createShoppingTask(itemName: string, sourceInputId: string, dueAt?: str
   const now = nowIso();
   return {
     id: createId("task"),
-    title: titleCase(/[\u4e00-\u9fa5]/.test(itemName) ? `买${itemName}` : `Buy ${itemName}`),
+    title: titleCase(shoppingTaskTitle(itemName)),
     type: "task",
     horizon: "today",
     dueAt,
@@ -206,7 +228,8 @@ function parseLocation(text: string) {
 }
 
 function isNoOpInput(text: string) {
-  return noOpWords.test(normalize(text).trim());
+  const normalized = normalize(text).trim().replace(/\s+/g, " ");
+  return noOpWords.test(normalized) || normalized.split(/\s+/).every((token) => noOpTokens.test(token));
 }
 
 export function parseLocalInput(rawText: string, state: AssistantState, inputType: "text" | "voice"): ParseResult {
@@ -243,7 +266,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
   }
 
   if (doneWords.test(lower)) {
-    const updatedTasks = next.tasks.map((task) =>
+    let updatedTasks = next.tasks.map((task) =>
       lower.includes("report") && task.title.toLowerCase().includes("report")
         ? { ...task, status: "done" as const, updatedAt: now }
         : lower.includes(normalize(task.title))
@@ -251,6 +274,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
           : task
     );
     const items = findShoppingItems(text);
+    updatedTasks = closeShoppingTasks(updatedTasks, items, now);
     const updatedShopping = next.shoppingItems.map((item) => {
       if (!items.some((name) => similar(name, item.itemName))) return item;
       return {
@@ -429,7 +453,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
       items.forEach((itemName) => {
         const existing = next.shoppingItems.find((item) => similar(item.itemName, itemName) && item.status !== "removed");
         const itemId = existing?.id ?? createId("shop");
-        const taskTitle = titleCase(/[\u4e00-\u9fa5]/.test(itemName) ? `买${itemName}` : `Buy ${itemName}`);
+        const taskTitle = titleCase(shoppingTaskTitle(itemName));
         if (!existing) {
           newShopping.push({
             id: itemId,

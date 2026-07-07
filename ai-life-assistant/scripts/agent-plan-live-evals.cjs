@@ -24,7 +24,7 @@ function loadEnvFile(filePath) {
 loadEnvFile(path.join(root, ".env"));
 loadEnvFile(path.join(root, ".env.local"));
 
-const jiti = require("../node_modules/.pnpm/jiti@1.21.7/node_modules/jiti")(__filename, {
+const jiti = require("jiti")(__filename, {
   alias: {
     "@": path.join(root, "src")
   }
@@ -308,6 +308,23 @@ const scenarios = [
             return unchanged || `state changed: ${JSON.stringify(summarizeState(after))}`;
           })
         ]
+      },
+      {
+        rawText: "好的，收到。",
+        expectations: [
+          expect("模型输出 zero-action", 2, ({ interpretation }) => {
+            return interpretation.actions.length === 0 || `actions=${summarizeActions(interpretation.actions).join("; ")}`;
+          }),
+          expect("落库后没有创建事项", 2, ({ before, after }) => {
+            const unchanged =
+              after.tasks.length === before.tasks.length &&
+              after.lifeEvents.length === before.lifeEvents.length &&
+              after.shoppingItems.length === before.shoppingItems.length &&
+              after.checkIns.length === before.checkIns.length &&
+              after.memoryItems.length === before.memoryItems.length;
+            return unchanged || `state changed: ${JSON.stringify(summarizeState(after))}`;
+          })
+        ]
       }
     ]
   },
@@ -364,7 +381,7 @@ const scenarios = [
   {
     id: "shopping_status_update",
     title: "购物状态：下单/明早送到应更新状态而不是再创建购买任务",
-    tags: ["shopping", "state-update"],
+    tags: ["smoke", "shopping", "state-update"],
     minScoreRatio: 0.85,
     state: () =>
       createState({
@@ -402,7 +419,7 @@ const scenarios = [
             if (milk.length !== 1) return `牛奶购物项数量=${milk.length}`;
             return /ordered|bought/.test(milk[0].status) || `status=${milk[0].status}`;
           }),
-          expect("没有新增重复购买任务", 1, ({ after }) => activeTasks(after, /买牛奶/).length <= 1 || "出现重复买牛奶任务")
+          expect("原购买任务已闭环", 2, ({ after }) => activeTasks(after, /买牛奶/).length === 0 || "买牛奶任务仍未关闭")
         ]
       }
     ]
@@ -410,7 +427,7 @@ const scenarios = [
   {
     id: "memory_context_safety",
     title: "记忆安全：pending memory 不应当作事实使用",
-    tags: ["memory", "safety"],
+    tags: ["smoke", "memory", "safety"],
     minScoreRatio: 0.75,
     state: () =>
       createState({

@@ -39,7 +39,7 @@ ARK_ASR_URL=wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_async
 ARK_ASR_RESOURCE_ID=volc.seedasr.sauc.duration
 ```
 
-The app sends natural-language interpretation requests through the backend route `/api/ai/interpret`. The default language model is `doubao-seed-2.0-lite`; the Settings page can switch models per request. If the key is missing or the Agent Plan request fails, the POC falls back to local parsing so the demo remains usable.
+The app sends natural-language interpretation requests through the backend route `/api/ai/interpret`. The default language model is `doubao-seed-2.0-lite`; the Settings page can switch models per request. If the Agent Plan runtime is not configured, the POC falls back to local parsing so the demo remains usable. If the runtime is configured but the request fails, the API surfaces the failure instead of silently saving a lower-confidence local parse.
 
 Voice input records audio in the browser and sends it to `/api/ai/asr`. Voice playback sends text to `/api/ai/tts`, which uses the Agent Plan HTTP TTS endpoint. Browser-native speech is kept only as a local fallback when the Agent Plan speech route is unavailable.
 

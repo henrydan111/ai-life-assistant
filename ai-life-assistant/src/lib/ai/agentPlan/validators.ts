@@ -150,6 +150,7 @@ function validateCheckInReferences(actions: InterpretAction[]) {
 export function validateFinalInterpretation(rawText: string, interpretation: AiInterpretation, raw?: unknown) {
   return [
     ...(raw === undefined ? [] : validateAiInterpretationSchema(raw)),
+    ...validateActionArraySchema(interpretation.actions, "normalized_actions"),
     ...validateCoreIntentCoverage(rawText, interpretation.actions, interpretation.feedback.question, true),
     ...validateCheckInReferences(interpretation.actions)
   ];

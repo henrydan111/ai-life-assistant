@@ -2,7 +2,7 @@ const assert = require("assert/strict");
 const path = require("path");
 
 const root = path.resolve(__dirname, "..");
-const jiti = require("../node_modules/.pnpm/jiti@1.21.7/node_modules/jiti")(__filename, {
+const jiti = require("jiti")(__filename, {
   alias: {
     "@": path.join(root, "src")
   }
@@ -11,8 +11,11 @@ const jiti = require("../node_modules/.pnpm/jiti@1.21.7/node_modules/jiti")(__fi
 const { applyInterpretation } = jiti("../src/lib/ai/applyInterpretation.ts");
 const { parseAiInterpretation, validateAiInterpretationSchema } = jiti("../src/lib/ai/interpretation.ts");
 const { validateCoverage, validateFinalInterpretation } = jiti("../src/lib/ai/agentPlan/validators.ts");
+const { actionText } = jiti("../src/lib/ai/agentPlan/actionText.ts");
+const { postProcessAgentPlanInterpretation } = jiti("../src/lib/ai/agentPlan/postProcess.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
+const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
 
 const fixedNow = "2026-01-01T08:00:00.000Z";
@@ -145,6 +148,18 @@ const evals = [
     }
   },
   {
+    name: "local fallback treats common acknowledgement as no-op",
+    run() {
+      const result = parseLocalInput("好的，收到。", createState(), "text").state;
+
+      assert.equal(result.tasks.length, 0);
+      assert.equal(result.lifeEvents.length, 0);
+      assert.equal(result.shoppingItems.length, 0);
+      assert.equal(result.checkIns.length, 0);
+      assert.equal(result.inputs.length, 1);
+    }
+  },
+  {
     name: "local fallback keeps repeated milk requests idempotent",
     run() {
       const first = parseLocalInput("买牛奶", createState(), "text").state;
@@ -183,6 +198,124 @@ const evals = [
     }
   },
   {
+    name: "travel draft policy skips cancelled or third-party travel",
+    run() {
+      const base = {
+        feedback: { title: "没有更改", detail: "没有保存出行。" },
+        actions: [],
+        memoryWrites: []
+      };
+
+      ["我不去苏州了，不用记。", "取消去苏州。", "我朋友去苏州，别记到我的行程里。"].forEach((rawText) => {
+        const result = ensureMentionedTravelDraft(rawText, base);
+        assert.equal(result.actions.filter((action) => action.type === "add_life_event").length, 0, rawText);
+      });
+    }
+  },
+  {
+    name: "travel draft policy adds main event when only a clarification mentions the city",
+    run() {
+      const result = ensureMentionedTravelDraft("我要去苏州，帮我先记一下。", {
+        feedback: { title: "还差一个细节", detail: "需要确认时间。", question: "你打算哪天去苏州？" },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认出行时间",
+            question: "你打算哪天去苏州？",
+            relatedType: "project",
+            relatedId: "assistant"
+          }
+        ],
+        memoryWrites: []
+      });
+
+      const events = result.actions.filter((action) => action.type === "add_life_event" && /苏州/.test(actionText(action)));
+      assert.equal(events.length, 1);
+      assert.equal(events[0].startsAt, undefined);
+    }
+  },
+  {
+    name: "travel prep split does not duplicate generated check-ins",
+    run() {
+      const combined = {
+        type: "add_check_in",
+        title: "确认行前准备",
+        question: "高铁票订好了吗？行李收拾好了吗？餐馆位置订好了吗？",
+        relatedType: "life_event",
+        relatedRef: "trip"
+      };
+      const result = splitCombinedTravelPrepCheckIns({
+        feedback: { title: "已整理", detail: "已整理行前准备。" },
+        actions: [
+          { type: "add_life_event", ref: "trip", title: "去上海", category: "travel", location: "上海" },
+          combined,
+          { ...combined }
+        ],
+        memoryWrites: []
+      });
+      const checkIns = result.actions.filter((action) => action.type === "add_check_in");
+      assert.equal(checkIns.filter((action) => /高铁票/.test(actionText(action))).length, 1);
+      assert.equal(checkIns.filter((action) => /行李/.test(actionText(action))).length, 1);
+      assert.equal(checkIns.filter((action) => /餐馆/.test(actionText(action))).length, 1);
+    }
+  },
+  {
+    name: "Agent Plan post-processing fills explicit leave and travel prep check-ins",
+    run() {
+      const rawText =
+        "我这周四和周五希望请假，提醒我要提前和老板说，然后我周日晚上计划去上海，提醒我要订高铁票和收拾行李。";
+      const result = postProcessAgentPlanInterpretation(rawText, createState(), {
+        feedback: { title: "已整理", detail: "已整理请假和上海行程。" },
+        actions: [
+          { type: "add_task", title: "周四和周五请假" },
+          { type: "add_life_event", title: "去上海", category: "travel", location: "上海" }
+        ],
+        memoryWrites: []
+      });
+
+      assert.equal(result.actions.some((action) => action.type === "add_check_in" && action.relatedType === "task" && /老板/.test(actionText(action))), true);
+      assert.equal(result.actions.some((action) => action.type === "add_check_in" && action.relatedType === "life_event" && /高铁票/.test(actionText(action))), true);
+      assert.equal(result.actions.some((action) => action.type === "add_check_in" && action.relatedType === "life_event" && /行李/.test(actionText(action))), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result).filter((error) => /relatedRef|relatedType/.test(error)), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing converts existing object relatedRef ids",
+    run() {
+      const state = createState({
+        shoppingItems: [
+          {
+            id: "shop_milk",
+            itemName: "牛奶",
+            status: "needed",
+            category: "household",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ]
+      });
+      const result = postProcessAgentPlanInterpretation("牛奶已经下单了，明早送到。", state, {
+        feedback: { title: "已更新", detail: "牛奶已下单。" },
+        actions: [
+          { type: "update_shopping_status", itemName: "牛奶", status: "ordered" },
+          {
+            type: "add_check_in",
+            title: "确认收货",
+            question: "明早牛奶送到了吗？",
+            relatedType: "shopping_item",
+            relatedRef: "shop_milk"
+          }
+        ],
+        memoryWrites: []
+      });
+      const checkIn = result.actions.find((action) => action.type === "add_check_in");
+
+      assert.equal(checkIn.relatedId, "shop_milk");
+      assert.equal(checkIn.relatedRef, undefined);
+      assert.deepEqual(validateFinalInterpretation("牛奶已经下单了，明早送到。", result).filter((error) => /relatedRef/.test(error)), []);
+    }
+  },
+  {
     name: "AI interpretation apply layer dedupes duplicate shopping actions",
     run() {
       const interpretation = {
@@ -197,6 +330,82 @@ const evals = [
 
       assert.equal(result.shoppingItems.filter((item) => item.itemName === "牛奶").length, 1);
       assert.equal(activeTasks(result, /买牛奶/).length, 1);
+    }
+  },
+  {
+    name: "AI shopping status update closes matching purchase task",
+    run() {
+      const state = createState({
+        shoppingItems: [
+          {
+            id: "shop_milk",
+            itemName: "牛奶",
+            status: "needed",
+            category: "household",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        tasks: [
+          {
+            id: "task_milk",
+            title: "买牛奶",
+            type: "task",
+            horizon: "today",
+            energyRequired: "low",
+            priority: "medium",
+            status: "todo",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ]
+      });
+      const result = applyInterpretation("牛奶已经下单了，明早送到。", "text", state, {
+        feedback: { title: "已更新", detail: "牛奶已标记为下单。" },
+        actions: [{ type: "update_shopping_status", itemName: "牛奶", status: "ordered" }],
+        memoryWrites: []
+      }).state;
+
+      assert.equal(result.shoppingItems[0].status, "ordered");
+      assert.equal(result.tasks.find((task) => task.id === "task_milk").status, "done");
+      assert.equal(activeTasks(result, /买牛奶/).length, 0);
+    }
+  },
+  {
+    name: "local fallback closes matching purchase task after order update",
+    run() {
+      const state = createState({
+        shoppingItems: [
+          {
+            id: "shop_milk",
+            itemName: "牛奶",
+            status: "needed",
+            category: "household",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        tasks: [
+          {
+            id: "task_milk",
+            title: "买牛奶",
+            type: "task",
+            horizon: "today",
+            energyRequired: "low",
+            priority: "medium",
+            status: "todo",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ]
+      });
+      const result = parseLocalInput("牛奶已经下单了，明早送到。", state, "text").state;
+
+      assert.equal(result.shoppingItems[0].status, "ordered");
+      assert.equal(result.tasks.find((task) => task.id === "task_milk").status, "done");
+      assert.equal(activeTasks(result, /买牛奶/).length, 0);
     }
   },
   {

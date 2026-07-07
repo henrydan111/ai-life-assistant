@@ -51,6 +51,29 @@ function findOpenTask(tasks: Task[], title: string, dueAt?: string) {
   );
 }
 
+function shouldCloseShoppingTask(task: Task, itemName: string) {
+  if (task.status === "done" || task.status === "cancelled") return false;
+  return (
+    similar(task.title, itemName) &&
+    (similar(task.title, shoppingTaskTitle(itemName)) || /\b(buy|get|pick up|order)\b|买|采购|下单/.test(normalize(task.title)))
+  );
+}
+
+function closeShoppingTasks(tasks: Task[], itemName: string, status: ShoppingItem["status"]) {
+  if (status === "needed") return tasks;
+  const closedStatus: Task["status"] = status === "removed" ? "cancelled" : "done";
+  const now = nowIso();
+  return tasks.map((task) =>
+    shouldCloseShoppingTask(task, itemName)
+      ? {
+          ...task,
+          status: closedStatus,
+          updatedAt: now
+        }
+      : task
+  );
+}
+
 function findSimilarLifeEvent(
   state: AssistantState,
   action: Extract<InterpretAction, { type: "add_life_event" }>
@@ -227,6 +250,7 @@ function addShoppingItem(
 function updateShoppingStatus(state: AssistantState, action: Extract<InterpretAction, { type: "update_shopping_status" }>) {
   const now = nowIso();
   const hasExisting = state.shoppingItems.some((item) => similar(item.itemName, action.itemName));
+  const tasks = closeShoppingTasks(state.tasks, action.itemName, action.status);
   const updated = state.shoppingItems.map((item) =>
     similar(item.itemName, action.itemName)
       ? {
@@ -238,10 +262,11 @@ function updateShoppingStatus(state: AssistantState, action: Extract<InterpretAc
       : item
   );
 
-  if (hasExisting) return { ...state, shoppingItems: updated };
+  if (hasExisting) return { ...state, shoppingItems: updated, tasks };
 
   return {
     ...state,
+    tasks,
     shoppingItems: [
       {
         id: createId("shop"),

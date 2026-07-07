@@ -63,7 +63,7 @@ export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation
     }
 
     categories.forEach((category) => {
-      const hasExistingSeparate = interpretation.actions.some((other) => {
+      const hasExistingSeparate = [...interpretation.actions, ...actions].some((other) => {
         if (other === action || other.type !== "add_check_in" || other.relatedType !== "life_event") return false;
         const text = actionText(other);
         return sameRelatedAnchor(action, other) && category.pattern.test(text) && !containsMultipleTravelPrepCategories(text);
@@ -85,10 +85,39 @@ export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation
 }
 
 function mentionedTravelLocation(rawText: string) {
-  const knownCity = rawText.match(/(?:去|出差去|旅行去|出行去)(苏州|上海|北京|杭州|南京|深圳|广州|成都|重庆|西安|武汉|长沙|厦门|青岛|天津|香港|澳门|台北)/);
+  const knownCity = rawText.match(/(?:去|出差去|旅行去|出行去)(苏州|上海|北京|杭州|南京|深圳|广州|成都|重庆|西安|武汉|长沙|厦门|青岛|天津|香港|澳门|台北|宁波|无锡|合肥|郑州|昆明|东京|新加坡)/);
   if (knownCity?.[1]) return knownCity[1];
-  const english = rawText.match(/\b(?:go to|travel to|trip to|visit)\s+([A-Z][a-zA-Z\s-]{1,30})/);
+  const english = rawText.match(/\b(?:go to|travel to|trip to|visit)\s+([a-zA-Z][a-zA-Z\s-]{1,30})/i);
   return english?.[1]?.trim();
+}
+
+function includesText(text: string, value: string) {
+  return text.toLowerCase().includes(value.toLowerCase());
+}
+
+function mentionedTravelIsBlocked(rawText: string, location: string) {
+  const cancelled = [
+    `不去${location}`,
+    `取消去${location}`,
+    `别记去${location}`,
+    `不用记去${location}`,
+    `不要记去${location}`,
+    `不用记录去${location}`,
+    `不要记录去${location}`,
+    `不是我去${location}`
+  ];
+  if (cancelled.some((phrase) => includesText(rawText, phrase))) return true;
+
+  const thirdPartyTravel = new RegExp(`(?:朋友|同事|别人|他|她).{0,8}(?:去|出差去|旅行去|出行去)${location}`);
+  const travelingWithUser = new RegExp(`(?:我|我们).{0,6}(?:和|跟|带).{0,8}(?:朋友|同事|他|她).{0,8}(?:去|出差去|旅行去|出行去)${location}`);
+  return thirdPartyTravel.test(rawText) && !travelingWithUser.test(rawText);
+}
+
+function hasTravelLifeEventForLocation(actions: InterpretAction[], location: string) {
+  return actions.some((action) => {
+    if (action.type !== "add_life_event") return false;
+    return includesText(actionText(action), location);
+  });
 }
 
 function uniqueRef(actions: InterpretAction[], base: string) {
@@ -104,7 +133,8 @@ function uniqueRef(actions: InterpretAction[], base: string) {
 export function ensureMentionedTravelDraft(rawText: string, interpretation: AiInterpretation): AiInterpretation {
   const location = mentionedTravelLocation(rawText);
   if (!location) return interpretation;
-  if (interpretation.actions.some((action) => actionText(action).includes(location))) return interpretation;
+  if (mentionedTravelIsBlocked(rawText, location)) return interpretation;
+  if (hasTravelLifeEventForLocation(interpretation.actions, location)) return interpretation;
 
   const ref = uniqueRef(interpretation.actions, "travel_draft");
   return {
