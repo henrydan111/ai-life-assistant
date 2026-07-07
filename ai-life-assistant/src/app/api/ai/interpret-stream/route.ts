@@ -5,7 +5,7 @@ import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
 import { resolvePendingConfirmations } from "@/lib/confirmation/resolvePendingConfirmations";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { InterpretResult } from "@/lib/store/interpretResult";
-import type { AiProcessingUpdate, AssistantState, TranscriptRepair } from "@/types/domain";
+import type { AiProcessingUpdate, AssistantState, ParseFeedback, TranscriptRepair } from "@/types/domain";
 
 export const runtime = "nodejs";
 
@@ -28,6 +28,14 @@ function isValidRequest(body: unknown): body is InterpretRequest {
 
 function streamLine(controller: ReadableStreamDefaultController<Uint8Array>, encoder: TextEncoder, message: StreamMessage) {
   controller.enqueue(encoder.encode(`${JSON.stringify(message)}\n`));
+}
+
+function mergeFeedback(confirmation: ParseFeedback, next: ParseFeedback): ParseFeedback {
+  return {
+    title: "已更新确认信息，也整理了新事项",
+    detail: [confirmation.detail, next.detail].filter(Boolean).join(" "),
+    question: next.question ?? confirmation.question
+  };
 }
 
 export async function POST(request: Request) {
@@ -56,12 +64,16 @@ export async function POST(request: Request) {
       const sendProgress = (update: AiProcessingUpdate) => {
         streamLine(controller, encoder, { type: "progress", ...update });
       };
+      let confirmationForFallback:
+        | ReturnType<typeof resolvePendingConfirmations>
+        | null = null;
 
       try {
         const confirmation = resolvePendingConfirmations(rawText, inputType, state, {
           originalText,
           transcriptRepair
         });
+        confirmationForFallback = confirmation;
         if (confirmation) {
           sendProgress({
             stage: "saving",
@@ -69,6 +81,8 @@ export async function POST(request: Request) {
             title: "已更新确认信息",
             detail: confirmation.feedback.detail
           });
+        }
+        if (confirmation && !confirmation.unhandledText) {
           sendProgress({
             stage: "done",
             status: "complete",
@@ -83,6 +97,9 @@ export async function POST(request: Request) {
           return;
         }
 
+        const planningText = confirmation?.unhandledText ?? rawText;
+        const planningState = confirmation?.state ?? state;
+
         if (!canUseAgentPlan()) {
           sendProgress({
             stage: "saving",
@@ -90,31 +107,33 @@ export async function POST(request: Request) {
             title: "先帮你记下",
             detail: "AI 深度整理暂时不可用，我会用本地方式先保存。"
           });
-          const result = parseLocalInput(rawText, state, inputType);
+          const result = parseLocalInput(planningText, planningState, inputType);
+          const feedback = confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback;
           sendProgress({
             stage: "saving",
             status: "complete",
             title: "已保存",
-            detail: result.feedback.detail
+            detail: feedback.detail
           });
           sendProgress({
             stage: "done",
             status: "complete",
             title: "整理完成",
-            detail: result.feedback.detail
+            detail: feedback.detail
           });
           streamLine(controller, encoder, {
             type: "result",
             ...result,
-            provider: "local_parser_fallback"
+            feedback,
+            provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
           });
           return;
         }
 
         const interpretation = await interpretWithAgentPlan({
-          rawText,
+          rawText: planningText,
           inputType,
-          state,
+          state: planningState,
           model,
           onProgress: sendProgress
         });
@@ -125,10 +144,11 @@ export async function POST(request: Request) {
           title: "保存总览",
           detail: "正在更新今日事项、后续安排和提醒。"
         });
-        const result = applyInterpretation(rawText, inputType, state, interpretation, {
+        const result = applyInterpretation(planningText, inputType, planningState, interpretation, {
           originalText,
           transcriptRepair
         });
+        const feedback = confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback;
         sendProgress({
           stage: "saving",
           status: "complete",
@@ -139,16 +159,38 @@ export async function POST(request: Request) {
           stage: "done",
           status: "complete",
           title: "整理完成",
-          detail: result.feedback.detail
+          detail: feedback.detail
         });
         streamLine(controller, encoder, {
           ...result,
+          feedback,
           type: "result",
-          provider: "volcengine_agent_plan_runtime",
+          provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
           model: resolveAgentPlanLanguageModel(model)
         });
       } catch (error) {
         console.warn("Agent Plan streamed interpretation failed.", error);
+        if (confirmationForFallback) {
+          const result = {
+            ...confirmationForFallback,
+            feedback: {
+              title: "已更新确认信息",
+              detail: `${confirmationForFallback.feedback.detail} 另外一句我没有安全保存，先没有修改。`
+            }
+          };
+          sendProgress({
+            stage: "done",
+            status: "attention",
+            title: result.feedback.title,
+            detail: result.feedback.detail
+          });
+          streamLine(controller, encoder, {
+            ...result,
+            type: "result",
+            provider: "local_confirmation_resolver"
+          });
+          return;
+        }
         const result = buildSafePlanningFailureResult(state, model);
         sendProgress({
           stage: "saving",

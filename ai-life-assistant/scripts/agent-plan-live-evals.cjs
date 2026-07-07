@@ -297,6 +297,14 @@ function normalizeCheckResult(result) {
   return { pass: false, detail: "Expectation returned an unsupported value." };
 }
 
+function mergeFeedback(confirmation, next) {
+  return {
+    title: "已更新确认信息，也整理了新事项",
+    detail: [confirmation.detail, next.detail].filter(Boolean).join(" "),
+    question: next.question ?? confirmation.question
+  };
+}
+
 const scenarios = [
   {
     id: "pending_confirmation_followup_dashboard",
@@ -376,6 +384,59 @@ const scenarios = [
           }),
           expect("dashboard 不再显示短期/长期旧追问", 2, ({ dashboard }) => {
             return !/(短期目标还是长期目标|长期目标|确认日常目标)/.test(dashboard.visibleText) ? true : dashboard.visibleText;
+          })
+        ]
+      }
+    ]
+  },
+  {
+    id: "pending_confirmation_with_new_intent",
+    title: "多轮确认：补充确认时不吞掉同句新事项",
+    tags: ["smoke", "dashboard", "clarification", "state-update"],
+    minScoreRatio: 1,
+    state: () =>
+      createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: "2026-01-01T08:00:00.000Z",
+            updatedAt: "2026-01-01T08:00:00.000Z"
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: "2026-01-01T08:00:00.000Z",
+            status: "pending",
+            createdAt: "2026-01-01T08:00:00.000Z"
+          }
+        ]
+      }),
+    steps: [
+      {
+        rawText: "晚上12点，另外明天买牛奶",
+        expectations: [
+          expect("睡眠目标时间已回填为午夜 00:00", 3, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠 routine goal";
+            return goal.targetTime === "00:00" || `targetTime=${goal.targetTime}`;
+          }),
+          expect("同句新事项买牛奶也被保存", 4, ({ after }) => {
+            return after.shoppingItems.some((item) => /牛奶/.test(item.itemName)) || "缺少牛奶购物项";
+          }),
+          expect("dashboard 不再显示 12 点含义旧追问", 2, ({ dashboard }) => {
+            return !/(中午12点|午夜12点|确认睡眠目标时间)/.test(dashboard.visibleText) ? true : dashboard.visibleText;
           })
         ]
       }
@@ -714,7 +775,7 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
 
   try {
     const confirmation = resolvePendingConfirmations(step.rawText, step.inputType ?? "text", state);
-    if (confirmation) {
+    if (confirmation && !confirmation.unhandledText) {
       const after = confirmation.state;
       const dashboard = generateVisibleDashboardSnapshot(after);
       const interpretation = { actions: [], memoryWrites: [], planTrace: [] };
@@ -776,16 +837,21 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
       };
     }
 
+    const planningText = confirmation?.unhandledText ?? step.rawText;
+    const planningState = confirmation?.state ?? state;
     const interpretation = await interpretWithAgentPlan({
-      rawText: step.rawText,
+      rawText: planningText,
       inputType: step.inputType ?? "text",
-      state,
+      state: planningState,
       model,
       onProgress(update) {
         progress.push({ ...update, atMs: Math.round(performance.now() - started) });
       }
     });
-    const applied = applyInterpretation(step.rawText, step.inputType ?? "text", state, interpretation);
+    const applied = applyInterpretation(planningText, step.inputType ?? "text", planningState, interpretation);
+    if (confirmation) {
+      applied.feedback = mergeFeedback(confirmation.feedback, applied.feedback);
+    }
     const after = applied.state;
     const dashboard = generateVisibleDashboardSnapshot(after);
     const ctx = {

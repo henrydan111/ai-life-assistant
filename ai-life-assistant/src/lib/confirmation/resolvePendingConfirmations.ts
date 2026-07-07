@@ -10,11 +10,17 @@ type ResolveOptions = {
 export type PendingConfirmationResolution = {
   state: AssistantState;
   feedback: ParseFeedback;
+  unhandledText?: string;
 };
 
 const timeQuestionPattern = /(时间|哪天|什么时候|几点|日期|开始|出行)/;
 const routineScopeQuestionPattern = /(短期|长期|范围|持续|多久|最近|试)/;
 const routineTargetTimeQuestionPattern = /(12点|十二点|中午|午夜|半夜|晚上|凌晨|几点|时间)/;
+const routineTextPattern = /(睡觉|睡|上床|入睡|休息|作息|早睡)/;
+const newIntentConnectorPattern = /(另外|还有|顺便|然后|并且|同时|再帮我|再提醒我)/;
+const newIntentCuePattern =
+  /\b(buy|get|pick up|order|call|email|text|schedule|book|remind|prepare|finish)\b|买|采购|下单|提醒|帮我|打电话|联系|安排|预约|预订|订|准备|带|发|写|完成|处理|去|见|请假/;
+const nonConfirmationObjectCuePattern = /(药|方案|项目|妈妈|爸爸|朋友|客户|老板|会议|电话|牛奶|伞|票|餐厅|饭店|文件|邮件)/;
 
 function normalize(text: string) {
   return text.trim().toLowerCase().replace(/[，。,.!?！？；;]/g, " ");
@@ -80,13 +86,44 @@ function textSegments(rawText: string) {
     .filter(Boolean);
 }
 
+function compactText(rawText: string) {
+  return rawText.replace(/\s|[，。,.!?！？；;]/g, "");
+}
+
+function isLikelyStandaloneConfirmationAnswer(rawText: string) {
+  const compact = compactText(rawText);
+  return (
+    compact.length <= 12 &&
+    !newIntentConnectorPattern.test(rawText) &&
+    !newIntentCuePattern.test(rawText) &&
+    !nonConfirmationObjectCuePattern.test(rawText)
+  );
+}
+
+function canAutoBindSingleCandidate(rawText: string, candidateCount: number) {
+  return candidateCount === 1 && isLikelyStandaloneConfirmationAnswer(rawText);
+}
+
 function eventTimeFromRawText(rawText: string, event: AssistantState["lifeEvents"][number], onlyCandidate: boolean) {
   const segment = textSegments(rawText).find((item) => mentionedEvent(item, event));
   return parseDueDate(segment ?? (onlyCandidate ? rawText : ""));
 }
 
 function mentionedRoutine(rawText: string, goal: AssistantState["routineGoals"][number]) {
-  return similar(rawText, goal.title) || /(睡觉|睡|上床|入睡|休息|作息|早睡)/.test(rawText + goal.title);
+  return similar(rawText, goal.title) || (routineTextPattern.test(rawText) && routineTextPattern.test(goal.title));
+}
+
+function matchingRoutineSegment(
+  rawText: string,
+  goal: AssistantState["routineGoals"][number],
+  candidateCount: number,
+  predicate: (segment: string) => boolean
+) {
+  return textSegments(rawText).find(
+    (segment) =>
+      predicate(segment) &&
+      (mentionedRoutine(segment, goal) || canAutoBindSingleCandidate(segment, candidateCount))
+  );
 }
 
 function resolveLifeEventTime(rawText: string, state: AssistantState) {
@@ -121,7 +158,7 @@ function resolveLifeEventTime(rawText: string, state: AssistantState) {
           : event
       ),
       checkIns: state.checkIns.map((checkIn) =>
-        matched.some((item) => item.checkIn.id === checkIn.id) ? { ...checkIn, status: "dismissed" as const } : checkIn
+        matched.some((item) => item.checkIn.id === checkIn.id) ? { ...checkIn, status: "answered" as const } : checkIn
       )
     },
     changed: true,
@@ -146,35 +183,40 @@ function routineScope(rawText: string) {
 }
 
 function resolveRoutineScope(rawText: string, state: AssistantState) {
-  const scope = routineScope(rawText);
-  if (!scope) return { state, changed: false, details: [] as string[] };
-
   const candidates = pendingCheckIns(state).filter(
     (checkIn) => checkIn.relatedType === "routine_goal" && routineScopeQuestionPattern.test(checkInText(checkIn))
   );
-  const matched = candidates.filter((checkIn) => {
-    const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
-    return goal && (mentionedRoutine(rawText, goal) || candidates.length === 1);
-  });
+  const matched = candidates
+    .map((checkIn) => {
+      const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
+      if (!goal) return undefined;
+      const segment = matchingRoutineSegment(rawText, goal, candidates.length, (item) => Boolean(routineScope(item)));
+      if (!segment) return undefined;
+      const scope = routineScope(segment);
+      return scope ? { checkIn, scope } : undefined;
+    })
+    .filter((item): item is { checkIn: AssistantCheckIn; scope: NonNullable<ReturnType<typeof routineScope>> } =>
+      Boolean(item)
+    );
   if (!matched.length) return { state, changed: false, details: [] as string[] };
 
-  const matchedIds = new Set(matched.map((checkIn) => checkIn.relatedId));
+  const scopeByGoalId = new Map(matched.map((item) => [item.checkIn.relatedId, item.scope]));
   const now = nowIso();
   return {
     state: {
       ...state,
       routineGoals: state.routineGoals.map((goal) =>
-        matchedIds.has(goal.id)
+        scopeByGoalId.has(goal.id)
           ? {
               ...goal,
-              scope: scope.scope,
-              scopeLabel: scope.scopeLabel,
+              scope: scopeByGoalId.get(goal.id)?.scope ?? goal.scope,
+              scopeLabel: scopeByGoalId.get(goal.id)?.scopeLabel ?? goal.scopeLabel,
               updatedAt: now
             }
           : goal
       ),
       checkIns: state.checkIns.map((checkIn) =>
-        matched.some((item) => item.id === checkIn.id) ? { ...checkIn, status: "dismissed" as const } : checkIn
+        matched.some((item) => item.checkIn.id === checkIn.id) ? { ...checkIn, status: "answered" as const } : checkIn
       )
     },
     changed: true,
@@ -213,35 +255,38 @@ function clarifiedRoutineTargetTime(rawText: string) {
 }
 
 function resolveRoutineTargetTime(rawText: string, state: AssistantState) {
-  const targetTime = clarifiedRoutineTargetTime(rawText);
-  if (!targetTime) return { state, changed: false, details: [] as string[] };
-
   const candidates = pendingCheckIns(state).filter(
     (checkIn) => checkIn.relatedType === "routine_goal" && routineTargetTimeQuestionPattern.test(checkInText(checkIn))
   );
-  const matched = candidates.filter((checkIn) => {
-    const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
-    return goal && (mentionedRoutine(rawText, goal) || candidates.length === 1);
-  });
+  const matched = candidates
+    .map((checkIn) => {
+      const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
+      if (!goal) return undefined;
+      const segment = matchingRoutineSegment(rawText, goal, candidates.length, (item) => Boolean(clarifiedRoutineTargetTime(item)));
+      if (!segment) return undefined;
+      const targetTime = clarifiedRoutineTargetTime(segment);
+      return targetTime ? { checkIn, targetTime } : undefined;
+    })
+    .filter((item): item is { checkIn: AssistantCheckIn; targetTime: string } => Boolean(item));
   if (!matched.length) return { state, changed: false, details: [] as string[] };
 
-  const matchedIds = new Set(matched.map((checkIn) => checkIn.relatedId));
+  const targetTimeByGoalId = new Map(matched.map((item) => [item.checkIn.relatedId, item.targetTime]));
   const now = nowIso();
   return {
     state: {
       ...state,
       routineGoals: state.routineGoals.map((goal) =>
-        matchedIds.has(goal.id)
+        targetTimeByGoalId.has(goal.id)
           ? {
               ...goal,
-              targetTime,
+              targetTime: targetTimeByGoalId.get(goal.id),
               targetTimeRelation: goal.targetTimeRelation ?? "before",
               updatedAt: now
             }
           : goal
       ),
       checkIns: state.checkIns.map((checkIn) =>
-        matched.some((item) => item.id === checkIn.id) ? { ...checkIn, status: "dismissed" as const } : checkIn
+        matched.some((item) => item.checkIn.id === checkIn.id) ? { ...checkIn, status: "answered" as const } : checkIn
       )
     },
     changed: true,
@@ -256,21 +301,101 @@ export function cleanupResolvedCheckIns(state: AssistantState): AssistantState {
       if (checkIn.status !== "pending") return checkIn;
       if (checkIn.relatedType === "life_event" && timeQuestionPattern.test(checkInText(checkIn))) {
         const event = state.lifeEvents.find((item) => item.id === checkIn.relatedId);
-        return event?.startsAt ? { ...checkIn, status: "dismissed" as const } : checkIn;
+        return event?.startsAt ? { ...checkIn, status: "answered" as const } : checkIn;
       }
       if (checkIn.relatedType === "routine_goal") {
         const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId);
         if (!goal) return checkIn;
         if (routineTargetTimeQuestionPattern.test(checkInText(checkIn)) && goal.targetTime) {
-          return { ...checkIn, status: "dismissed" as const };
+          return { ...checkIn, status: "answered" as const };
         }
         if (routineScopeQuestionPattern.test(checkInText(checkIn)) && goal.scope !== "unspecified") {
-          return { ...checkIn, status: "dismissed" as const };
+          return { ...checkIn, status: "answered" as const };
         }
       }
       return checkIn;
     })
   };
+}
+
+function changedEventIds(before: AssistantState, after: AssistantState) {
+  return new Set(
+    after.lifeEvents
+      .filter((event) => {
+        const previous = before.lifeEvents.find((item) => item.id === event.id);
+        return previous && previous.startsAt !== event.startsAt;
+      })
+      .map((event) => event.id)
+  );
+}
+
+function changedRoutineTargetIds(before: AssistantState, after: AssistantState) {
+  return new Set(
+    after.routineGoals
+      .filter((goal) => {
+        const previous = before.routineGoals.find((item) => item.id === goal.id);
+        return previous && previous.targetTime !== goal.targetTime;
+      })
+      .map((goal) => goal.id)
+  );
+}
+
+function changedRoutineScopeIds(before: AssistantState, after: AssistantState) {
+  return new Set(
+    after.routineGoals
+      .filter((goal) => {
+        const previous = before.routineGoals.find((item) => item.id === goal.id);
+        return previous && (previous.scope !== goal.scope || previous.scopeLabel !== goal.scopeLabel);
+      })
+      .map((goal) => goal.id)
+  );
+}
+
+function segmentWasResolvedConfirmation(segment: string, before: AssistantState, after: AssistantState) {
+  const eventIds = changedEventIds(before, after);
+  if (
+    eventIds.size > 0 &&
+    before.lifeEvents.some((event) => eventIds.has(event.id) && mentionedEvent(segment, event) && Boolean(parseDueDate(segment)))
+  ) {
+    return true;
+  }
+
+  const targetIds = changedRoutineTargetIds(before, after);
+  if (
+    targetIds.size > 0 &&
+    before.routineGoals.some(
+      (goal) =>
+        targetIds.has(goal.id) &&
+        Boolean(clarifiedRoutineTargetTime(segment)) &&
+        (mentionedRoutine(segment, goal) || isLikelyStandaloneConfirmationAnswer(segment))
+    )
+  ) {
+    return true;
+  }
+
+  const scopeIds = changedRoutineScopeIds(before, after);
+  if (
+    scopeIds.size > 0 &&
+    before.routineGoals.some(
+      (goal) =>
+        scopeIds.has(goal.id) &&
+        Boolean(routineScope(segment)) &&
+        (mentionedRoutine(segment, goal) || isLikelyStandaloneConfirmationAnswer(segment))
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function unresolvedIntentText(rawText: string, before: AssistantState, after: AssistantState) {
+  if (!newIntentConnectorPattern.test(rawText)) return undefined;
+  const unresolved = textSegments(rawText).filter((segment) => {
+    if (segmentWasResolvedConfirmation(segment, before, after)) return false;
+    return newIntentCuePattern.test(segment);
+  });
+  return unresolved.length ? unresolved.join("。") : undefined;
 }
 
 export function resolvePendingConfirmations(
@@ -279,6 +404,7 @@ export function resolvePendingConfirmations(
   state: AssistantState,
   options: ResolveOptions = {}
 ): PendingConfirmationResolution | null {
+  const before = state;
   let next = state;
   const details: string[] = [];
 
@@ -298,6 +424,7 @@ export function resolvePendingConfirmations(
 
   return {
     state: appendInput(next, rawText, inputType, feedback, options),
-    feedback
+    feedback,
+    unhandledText: unresolvedIntentText(rawText, before, next)
   };
 }

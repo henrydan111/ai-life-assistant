@@ -4,7 +4,7 @@ import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel 
 import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
 import { resolvePendingConfirmations } from "@/lib/confirmation/resolvePendingConfirmations";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
-import type { AssistantState, TranscriptRepair } from "@/types/domain";
+import type { AssistantState, ParseFeedback, TranscriptRepair } from "@/types/domain";
 
 export const runtime = "nodejs";
 
@@ -19,6 +19,14 @@ type InterpretRequest = {
 
 function isValidRequest(body: unknown): body is InterpretRequest {
   return Boolean(body) && typeof body === "object";
+}
+
+function mergeFeedback(confirmation: ParseFeedback, next: ParseFeedback): ParseFeedback {
+  return {
+    title: "已更新确认信息，也整理了新事项",
+    detail: [confirmation.detail, next.detail].filter(Boolean).join(" "),
+    question: next.question ?? confirmation.question
+  };
 }
 
 export async function POST(request: Request) {
@@ -39,39 +47,54 @@ export async function POST(request: Request) {
     originalText: body.originalText,
     transcriptRepair: body.transcriptRepair
   });
-  if (confirmation) {
+  if (confirmation && !confirmation.unhandledText) {
     return NextResponse.json({
       ...confirmation,
       provider: "local_confirmation_resolver"
     });
   }
 
+  const planningText = confirmation?.unhandledText ?? body.rawText;
+  const planningState = confirmation?.state ?? body.state;
+
   if (!canUseAgentPlan()) {
-    const result = parseLocalInput(body.rawText, body.state, inputType);
+    const result = parseLocalInput(planningText, planningState, inputType);
     return NextResponse.json({
       ...result,
-      provider: "local_parser_fallback"
+      feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
+      provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
     });
   }
 
   try {
     const interpretation = await interpretWithAgentPlan({
-      rawText: body.rawText,
+      rawText: planningText,
       inputType,
-      state: body.state,
+      state: planningState,
       model: body.model
     });
-    const result = applyInterpretation(body.rawText, inputType, body.state, interpretation, {
+    const result = applyInterpretation(planningText, inputType, planningState, interpretation, {
       originalText: body.originalText,
       transcriptRepair: body.transcriptRepair
     });
     return NextResponse.json({
       ...result,
-      provider: "volcengine_agent_plan_runtime",
+      feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
+      provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
       model: resolveAgentPlanLanguageModel(body.model)
     });
   } catch (error) {
     console.warn("Agent Plan interpretation failed.", error);
+    if (confirmation) {
+      return NextResponse.json({
+        ...confirmation,
+        feedback: {
+          title: "已更新确认信息",
+          detail: `${confirmation.feedback.detail} 另外一句我没有安全保存，先没有修改。`
+        },
+        provider: "local_confirmation_resolver"
+      });
+    }
     return NextResponse.json(buildSafePlanningFailureResult(body.state, body.model));
   }
 }

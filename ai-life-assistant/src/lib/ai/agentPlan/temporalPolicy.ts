@@ -13,11 +13,11 @@ const twelvePattern = /(12|十二)\s*点/;
 const beforePattern = /前/;
 const explicitEveningPattern = /(晚上|晚间|今晚|每晚)/;
 const explicitEarlyMorningPattern = /(凌晨|清晨|夜里)/;
+const explicitMorningPattern = /(上午|早上|早晨)/;
 const explicitMidnightPattern =
   /(半夜|午夜|零点|零时|0点|0\s*:\s*00|24点|二十四点|晚上\s*(12|十二)\s*点|夜里\s*(12|十二)\s*点|晚间\s*(12|十二)\s*点|凌晨\s*(12|十二)\s*点|今晚\s*(12|十二)\s*点|每晚\s*(12|十二)\s*点)/;
 const explicitNoonPattern =
   /((中午|正午|午间)\s*(12|十二)\s*点|(12|十二)\s*点\s*(中午|正午|午间))/;
-const unsupportedMinutePattern = /\d{1,2}\s*[点:：]\s*\d{1,2}|[一二三四五六七八九十]+点半|半/;
 const chineseDigits: Record<string, number> = {
   零: 0,
   一: 1,
@@ -146,7 +146,17 @@ export function resolveRecurringSleepTarget(rawText: string): SleepTimeResolutio
     return ambiguity(rawText, "你说的晚上这个时间，是指当天晚上，还是凌晨后的时间？");
   }
 
-  if (sleepPattern.test(rawText) && hour >= 1 && hour <= 11 && unsupportedMinutePattern.test(rawText)) {
+  if (explicitMorningPattern.test(rawText) && hour >= 1 && hour <= 11) {
+    return {
+      targetTime: timeString(hour, minute),
+      targetTimeRelation: hasBefore ? "before" : undefined,
+      ambiguity: "none",
+      evidence: "numeric_only",
+      sourceQuote: rawText
+    };
+  }
+
+  if (sleepPattern.test(rawText) && hour >= 1 && hour <= 11) {
     return ambiguity(rawText, "你说的这个睡觉时间，是上午还是晚上？");
   }
 

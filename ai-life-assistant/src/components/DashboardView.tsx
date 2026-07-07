@@ -53,7 +53,7 @@ function visibleRelatedReminders(
   relatedId: string
 ) {
   return state.checkIns
-    .filter((checkIn) => checkIn.status !== "dismissed" && checkIn.relatedType === relatedType && checkIn.relatedId === relatedId)
+    .filter((checkIn) => checkIn.status === "pending" && checkIn.relatedType === relatedType && checkIn.relatedId === relatedId)
     .sort((left, right) => new Date(left.askAt).getTime() - new Date(right.askAt).getTime());
 }
 

@@ -132,7 +132,7 @@ function buildCalendarItems(state: AssistantState, hiddenTaskIds = new Set<strin
   }
 
   for (const checkIn of state.checkIns) {
-    if (checkIn.status === "dismissed") continue;
+    if (checkIn.status !== "pending") continue;
     const reminder: CalendarReminder = {
       id: checkIn.id,
       title: checkIn.title,

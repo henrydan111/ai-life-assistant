@@ -75,7 +75,7 @@ function activeTasks(state, pattern) {
 }
 
 function activeCheckIns(state, pattern) {
-  return state.checkIns.filter((checkIn) => checkIn.status !== "dismissed" && pattern.test(`${checkIn.title} ${checkIn.question}`));
+  return state.checkIns.filter((checkIn) => checkIn.status === "pending" && pattern.test(`${checkIn.title} ${checkIn.question}`));
 }
 
 function activeRoutineGoals(state, pattern) {
@@ -105,7 +105,7 @@ function assertFeedbackStateConsistency(before, after, feedback) {
     assert.equal(
       after.checkIns.some((checkIn) => {
         const text = `${checkIn.title} ${checkIn.question}`;
-        return checkIn.status !== "dismissed" && (text.includes(feedback.question) || similar(text, feedback.question));
+        return checkIn.status === "pending" && (text.includes(feedback.question) || similar(text, feedback.question));
       }),
       true
     );
@@ -160,6 +160,46 @@ const evals = [
       assert.match(dashboard.visibleText, /确认睡眠目标时间/);
       assert.match(dashboard.visibleText, /中午12点|午夜12点/);
       assert.match(dashboard.visibleText, /具体出行开始时间/);
+    }
+  },
+  {
+    name: "dashboard snapshot hides answered confirmations",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            targetTime: "00:00",
+            targetTimeRelation: "before",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "answered",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const dashboard = generateVisibleDashboardSnapshot(state);
+
+      assert.doesNotMatch(dashboard.visibleText, /确认睡眠目标时间|中午12点|午夜12点/);
+      assert.equal(dashboard.routineGoals[0].reminders.length, 0);
     }
   },
   {
@@ -267,7 +307,86 @@ const evals = [
 
       assert.equal(goal.targetTime, "00:00");
       assert.equal(goal.targetTimeRelation, "before");
-      assert.equal(result.state.checkIns[0].status, "dismissed");
+      assert.equal(result.state.checkIns[0].status, "answered");
+    }
+  },
+  {
+    name: "pending confirmation resolver preserves unhandled new intent",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const confirmation = resolvePendingConfirmations("晚上12点，另外明天买牛奶", "text", state);
+      assert.ok(confirmation);
+      assert.match(confirmation.unhandledText ?? "", /买牛奶/);
+      assert.equal(confirmation.state.routineGoals[0].targetTime, "00:00");
+      assert.equal(confirmation.state.checkIns[0].status, "answered");
+
+      const parsed = parseLocalInput(confirmation.unhandledText ?? "", confirmation.state, "text").state;
+      assert.equal(parsed.shoppingItems.some((item) => item.itemName === "牛奶"), true);
+    }
+  },
+  {
+    name: "pending confirmation resolver does not bind long unrelated time sentence",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const result = resolvePendingConfirmations("晚上12点给妈妈打电话", "text", state);
+
+      assert.equal(result, null);
     }
   },
   {
@@ -333,7 +452,7 @@ const evals = [
       assert.equal(event.startsAt, undefined);
       assert.equal(goal.targetTime, "00:00");
       assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_trip_time").status, "pending");
-      assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_sleep_time").status, "dismissed");
+      assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_sleep_time").status, "answered");
     }
   },
   {
@@ -494,12 +613,17 @@ const evals = [
       const digital = resolveRecurringSleepTarget("我最近希望每天23:30前睡觉。");
       const early = resolveRecurringSleepTarget("我最近希望每天凌晨1点前睡觉。");
       const ambiguous = resolveRecurringSleepTarget("我最近希望每天11点半前睡觉。");
+      const ambiguousHour = resolveRecurringSleepTarget("我最近希望每天11点前睡觉。");
+      const morning = resolveRecurringSleepTarget("我最近希望每天上午11点前休息。");
 
       assert.equal(evening.targetTime, "23:30");
       assert.equal(digital.targetTime, "23:30");
       assert.equal(early.targetTime, "01:00");
       assert.equal(ambiguous.ambiguity, "ampm");
       assert.equal(ambiguous.targetTime, undefined);
+      assert.equal(ambiguousHour.ambiguity, "ampm");
+      assert.equal(ambiguousHour.targetTime, undefined);
+      assert.equal(morning.targetTime, "11:00");
     }
   },
   {
@@ -912,6 +1036,48 @@ const evals = [
       }).state;
 
       assert.equal(activeRoutineGoals(result, /睡觉|睡|休息/).length, 1);
+      assert.equal(result.memoryItems.length, 0);
+      assert.equal(result.checkIns.filter((checkIn) => checkIn.relatedType === "memory").length, 0);
+    }
+  },
+  {
+    name: "AI interpretation suppresses memory writes duplicated by existing routine goals",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天 00:00 前睡觉",
+            cadence: "daily",
+            targetTime: "00:00",
+            targetTimeRelation: "before",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ]
+      });
+      const result = applyInterpretation("这个睡眠目标先保持。", "text", state, {
+        feedback: { title: "已了解", detail: "会继续关注睡眠目标。" },
+        actions: [],
+        memoryWrites: [
+          {
+            type: "recurring_pattern",
+            summary: "用户最近希望每天半夜12点前睡觉。",
+            tags: ["睡觉", "作息"],
+            entities: ["睡觉"],
+            confidence: 0.9,
+            requiresConfirmation: true,
+            evidence: "用户提到继续保持睡眠目标。"
+          }
+        ]
+      }).state;
+
+      assert.equal(result.routineGoals.length, 1);
       assert.equal(result.memoryItems.length, 0);
       assert.equal(result.checkIns.filter((checkIn) => checkIn.relatedType === "memory").length, 0);
     }

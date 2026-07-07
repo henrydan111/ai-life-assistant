@@ -237,21 +237,29 @@ function actionText(action: InterpretAction) {
   return JSON.stringify(action);
 }
 
-function isRoutineGoalDuplicateMemory(action: Extract<InterpretAction, { type: "add_routine_goal" }>, write: MemoryWrite) {
+function routineGoalText(goal: RoutineGoal) {
+  return [goal.title, goal.description, goal.cadence, goal.targetTime, goal.scopeLabel].filter(Boolean).join(" ");
+}
+
+function isRoutineGoalTextDuplicateMemory(routineText: string, write: MemoryWrite) {
   if (write.type !== "recurring_pattern" && write.type !== "open_loop") return false;
-  const routineText = actionText(action);
   const memoryText = [write.summary, write.evidence, ...(write.tags ?? []), ...(write.entities ?? [])].join(" ");
   const routineSleep = /(睡觉|睡|上床|入睡|休息|作息|早睡|12点|半夜|午夜)/.test(routineText);
   const memorySleep = /(睡觉|睡|上床|入睡|休息|作息|早睡|12点|半夜|午夜)/.test(memoryText);
   return (routineSleep && memorySleep) || similar(routineText, memoryText);
 }
 
-function suppressDuplicateRoutineGoalMemoryWrites(actions: InterpretAction[], writes: MemoryWrite[]) {
-  const routineGoals = actions.filter(
-    (action): action is Extract<InterpretAction, { type: "add_routine_goal" }> => action.type === "add_routine_goal"
-  );
-  if (!routineGoals.length || !writes.length) return writes;
-  return writes.filter((write) => !routineGoals.some((action) => isRoutineGoalDuplicateMemory(action, write)));
+function suppressDuplicateRoutineGoalMemoryWrites(state: AssistantState, actions: InterpretAction[], writes: MemoryWrite[]) {
+  if (!writes.length) return writes;
+  const actionRoutineTexts = actions
+    .filter((action): action is Extract<InterpretAction, { type: "add_routine_goal" }> => action.type === "add_routine_goal")
+    .map(actionText);
+  const existingRoutineTexts = state.routineGoals
+    .filter((goal) => goal.status === "active" || goal.status === "paused")
+    .map(routineGoalText);
+  const routineTexts = [...actionRoutineTexts, ...existingRoutineTexts];
+  if (!routineTexts.length) return writes;
+  return writes.filter((write) => !routineTexts.some((text) => isRoutineGoalTextDuplicateMemory(text, write)));
 }
 
 function addShoppingItem(
@@ -523,7 +531,7 @@ export function applyInterpretation(
     }
   });
 
-  next = applyMemoryWrites(next, suppressDuplicateRoutineGoalMemoryWrites(interpretation.actions, interpretation.memoryWrites), inputId);
+  next = applyMemoryWrites(next, suppressDuplicateRoutineGoalMemoryWrites(next, interpretation.actions, interpretation.memoryWrites), inputId);
 
   return {
     state: next,

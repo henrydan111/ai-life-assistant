@@ -127,6 +127,7 @@ Reports include:
 The live suite currently covers:
 
 - pending confirmation follow-up visibility on the dashboard
+- pending confirmation answers with additional same-utterance new intents
 - complex multi-intent life admin
 - no-op acknowledgement
 - ambiguous travel date

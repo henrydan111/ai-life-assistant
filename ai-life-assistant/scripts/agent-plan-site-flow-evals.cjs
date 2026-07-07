@@ -278,6 +278,61 @@ const scenarios = [
     ]
   },
   {
+    id: "pending_confirmation_with_new_intent",
+    title: "网站流：补充确认时不吞掉同句新事项",
+    state: () =>
+      createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: "2026-01-01T08:00:00.000Z",
+            updatedAt: "2026-01-01T08:00:00.000Z"
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: "2026-01-01T08:00:00.000Z",
+            status: "pending",
+            createdAt: "2026-01-01T08:00:00.000Z"
+          }
+        ]
+      }),
+    minScoreRatio: 1,
+    steps: [
+      {
+        rawText: "晚上12点，另外明天买牛奶",
+        expectations: [
+          expect("睡眠目标时间已回填为午夜 00:00", 3, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠 routine goal";
+            return goal.targetTime === "00:00" || `targetTime=${goal.targetTime}`;
+          }),
+          expect("同句新事项买牛奶也被保存", 4, ({ after }) => {
+            return after.shoppingItems.some((item) => /牛奶/.test(item.itemName)) || "缺少牛奶购物项";
+          }),
+          expect("dashboard 不再显示 12 点含义旧追问", 2, ({ dashboard }) => {
+            return !/(中午12点|午夜12点|确认睡眠目标时间)/.test(dashboard.visibleText) ? true : dashboard.visibleText;
+          }),
+          expect("provider 标明确认解析后继续处理", 1, ({ result }) => {
+            return /local_confirmation_resolver/.test(result.provider ?? "") || `provider=${result.provider}`;
+          })
+        ]
+      }
+    ]
+  },
+  {
     id: "routine_sleep_goal",
     title: "网站流：最近每天半夜 12 点前睡觉",
     state: () => createState(),
