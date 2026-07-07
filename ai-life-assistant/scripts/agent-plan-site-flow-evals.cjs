@@ -404,7 +404,7 @@ async function main() {
     ].join("\n"));
     return;
   }
-  const baseUrl = argValue("--base-url") ?? process.env.EVAL_SITE_BASE_URL ?? "http://127.0.0.1:3000";
+  const baseUrl = argValue("--base-url") ?? process.env.EVAL_SITE_BASE_URL ?? "http://localhost:3000";
   const selected = selectedScenarios();
   if (!selected.length) throw new Error("No site-flow eval scenarios matched the requested filters.");
   const repeat = Math.max(1, Number(argValue("--repeat") ?? 1));
