@@ -1,4 +1,5 @@
 import type { AssistantState, ParseFeedback } from "@/types/domain";
+import type { ConfirmationTrace } from "@/lib/confirmation/resolvePendingConfirmations";
 
 export const safePlanningFailureProvider = "volcengine_agent_plan_runtime_failed_safely";
 
@@ -12,6 +13,7 @@ export type InterpretResult = {
   stateUnchanged?: boolean;
   clientRequestId?: string;
   baseRevision?: number;
+  confirmationTrace?: ConfirmationTrace[];
 };
 
 export type RequestRevision = {

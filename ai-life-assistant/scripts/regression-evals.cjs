@@ -300,6 +300,11 @@ const evals = [
       assert.equal(goal.scope, "recent");
       assert.equal(result.state.checkIns.every((checkIn) => checkIn.status !== "pending"), true);
       assert.doesNotMatch(dashboard.visibleText, /具体出行开始时间|短期目标还是长期目标/);
+      assert.deepEqual(
+        result.confirmationTrace.map((item) => item.rule),
+        ["confirmation.life_event_time", "confirmation.routine_goal_scope"]
+      );
+      assert.equal(result.confirmationTrace.every((item) => item.outcome === "matched" && item.confidence > 0), true);
     }
   },
   {
@@ -341,6 +346,9 @@ const evals = [
       assert.equal(goal.targetTime, "00:00");
       assert.equal(goal.targetTimeRelation, "before");
       assert.equal(result.state.checkIns[0].status, "answered");
+      assert.equal(result.confirmationTrace[0].rule, "confirmation.routine_goal_target_time");
+      assert.equal(result.confirmationTrace[0].checkInId, "check_sleep_time");
+      assert.equal(result.confirmationTrace[0].confidence, 0.68);
     }
   },
   {
@@ -411,6 +419,28 @@ const evals = [
       assert.equal(goal.scope, "recent");
       assert.equal(goal.scopeLabel, "先试一周");
       assert.equal(result.state.checkIns.every((checkIn) => checkIn.status === "answered"), true);
+      assert.equal(
+        result.confirmationTrace.some(
+          (item) =>
+            item.rule === "confirmation.life_event_time" &&
+            item.slot === "life_event_time" &&
+            item.checkInId === "check_trip_time" &&
+            item.targetId === "event_shanghai" &&
+            item.confidence === 0.92
+        ),
+        true
+      );
+      assert.equal(
+        result.confirmationTrace.some(
+          (item) =>
+            item.rule === "confirmation.routine_goal_scope" &&
+            item.slot === "routine_goal_scope" &&
+            item.checkInId === "check_sleep_scope" &&
+            item.targetId === "routine_sleep" &&
+            item.confidence === 0.92
+        ),
+        true
+      );
     }
   },
   {
@@ -502,6 +532,13 @@ const evals = [
       assert.match(confirmation.unhandledText ?? "", /买牛奶/);
       assert.equal(confirmation.state.routineGoals[0].targetTime, "00:00");
       assert.equal(confirmation.state.checkIns[0].status, "answered");
+      assert.equal(confirmation.confirmationTrace.some((item) => item.rule === "confirmation.routine_goal_target_time"), true);
+      assert.equal(
+        confirmation.confirmationTrace.some(
+          (item) => item.rule === "confirmation.unhandled_text" && item.outcome === "unhandled" && /买牛奶/.test(item.segment)
+        ),
+        true
+      );
 
       const parsed = parseLocalInput(confirmation.unhandledText ?? "", confirmation.state, "text", {
         inputId: confirmation.sourceInputId,

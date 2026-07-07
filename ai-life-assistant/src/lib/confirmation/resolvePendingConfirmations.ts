@@ -12,6 +12,30 @@ export type PendingConfirmationResolution = {
   feedback: ParseFeedback;
   unhandledText?: string;
   sourceInputId: string;
+  confirmationTrace?: ConfirmationTrace[];
+};
+
+export type ConfirmationTrace = {
+  rule:
+    | "confirmation.life_event_time"
+    | "confirmation.routine_goal_target_time"
+    | "confirmation.routine_goal_scope"
+    | "confirmation.unhandled_text";
+  outcome: "matched" | "unhandled";
+  slot?: NonNullable<AssistantCheckIn["clarification"]>["slot"];
+  checkInId?: string;
+  targetType?: "life_event" | "routine_goal";
+  targetId?: string;
+  segment?: string;
+  confidence: number;
+  reason: string;
+};
+
+type ResolverResult = {
+  state: AssistantState;
+  changed: boolean;
+  details: string[];
+  trace: ConfirmationTrace[];
 };
 
 const timeQuestionPattern = /(时间|哪天|什么时候|几点|日期|开始|出行)/;
@@ -80,6 +104,11 @@ function checkInClarifies(
   return legacyPattern.test(checkInText(checkIn));
 }
 
+function matchConfidence(checkIn: AssistantCheckIn, isStandaloneAnswer: boolean) {
+  const base = checkIn.clarification ? 0.92 : 0.76;
+  return Number((base - (isStandaloneAnswer ? 0.08 : 0)).toFixed(2));
+}
+
 function pendingCheckIns(state: AssistantState) {
   return state.checkIns.filter((checkIn) => checkIn.status === "pending");
 }
@@ -141,7 +170,7 @@ function matchingRoutineSegment(
   );
 }
 
-function resolveLifeEventTime(rawText: string, state: AssistantState) {
+function resolveLifeEventTime(rawText: string, state: AssistantState): ResolverResult {
   const onlyPendingCheckIn = pendingCheckIns(state).length === 1;
   const candidates = pendingCheckIns(state).filter(
     (checkIn) => checkIn.relatedType === "life_event" && checkInClarifies(checkIn, "life_event_time", timeQuestionPattern)
@@ -152,12 +181,12 @@ function resolveLifeEventTime(rawText: string, state: AssistantState) {
       if (!event) return undefined;
       const segment = eventTimeSegment(rawText, event, onlyPendingCheckIn);
       const startsAt = segment ? parseDueDate(segment) : undefined;
-      return startsAt ? { checkIn, event, startsAt } : undefined;
+      return startsAt ? { checkIn, event, startsAt, segment } : undefined;
     })
-    .filter((item): item is { checkIn: AssistantCheckIn; event: AssistantState["lifeEvents"][number]; startsAt: string } =>
+    .filter((item): item is { checkIn: AssistantCheckIn; event: AssistantState["lifeEvents"][number]; startsAt: string; segment: string } =>
       Boolean(item)
     );
-  if (!matched.length) return { state, changed: false, details: [] as string[] };
+  if (!matched.length) return { state, changed: false, details: [], trace: [] };
 
   const startsByEventId = new Map(matched.map((item) => [item.event.id, item.startsAt]));
   const now = nowIso();
@@ -178,7 +207,23 @@ function resolveLifeEventTime(rawText: string, state: AssistantState) {
       )
     },
     changed: true,
-    details: ["已更新出行/日程时间。"]
+    details: ["已更新出行/日程时间。"],
+    trace: matched.map((item) => {
+      const standalone = !mentionedEvent(item.segment, item.event);
+      return {
+        rule: "confirmation.life_event_time",
+        outcome: "matched",
+        slot: "life_event_time",
+        checkInId: item.checkIn.id,
+        targetType: "life_event",
+        targetId: item.event.id,
+        segment: item.segment,
+        confidence: matchConfidence(item.checkIn, standalone),
+        reason: standalone
+          ? "Only one pending life-event time clarification was available, so a standalone time answer was applied."
+          : "The answer segment mentions the pending life event and contains a resolvable date/time."
+      };
+    })
   };
 }
 
@@ -204,7 +249,7 @@ function routineScopeIsConfirmed(goal: AssistantState["routineGoals"][number]) {
   return false;
 }
 
-function resolveRoutineScope(rawText: string, state: AssistantState) {
+function resolveRoutineScope(rawText: string, state: AssistantState): ResolverResult {
   const candidates = pendingCheckIns(state).filter(
     (checkIn) => checkIn.relatedType === "routine_goal" && checkInClarifies(checkIn, "routine_goal_scope", routineScopeQuestionPattern)
   );
@@ -215,12 +260,12 @@ function resolveRoutineScope(rawText: string, state: AssistantState) {
       const segment = matchingRoutineSegment(rawText, goal, candidates.length, (item) => Boolean(routineScope(item)));
       if (!segment) return undefined;
       const scope = routineScope(segment);
-      return scope ? { checkIn, scope } : undefined;
+      return scope ? { checkIn, goal, scope, segment } : undefined;
     })
-    .filter((item): item is { checkIn: AssistantCheckIn; scope: NonNullable<ReturnType<typeof routineScope>> } =>
+    .filter((item): item is { checkIn: AssistantCheckIn; goal: AssistantState["routineGoals"][number]; scope: NonNullable<ReturnType<typeof routineScope>>; segment: string } =>
       Boolean(item)
     );
-  if (!matched.length) return { state, changed: false, details: [] as string[] };
+  if (!matched.length) return { state, changed: false, details: [], trace: [] };
 
   const scopeByGoalId = new Map(matched.map((item) => [item.checkIn.relatedId, item.scope]));
   const now = nowIso();
@@ -242,7 +287,23 @@ function resolveRoutineScope(rawText: string, state: AssistantState) {
       )
     },
     changed: true,
-    details: ["已更新节奏目标范围。"]
+    details: ["已更新节奏目标范围。"],
+    trace: matched.map((item) => {
+      const standalone = !mentionedRoutine(item.segment, item.goal);
+      return {
+        rule: "confirmation.routine_goal_scope",
+        outcome: "matched",
+        slot: "routine_goal_scope",
+        checkInId: item.checkIn.id,
+        targetType: "routine_goal",
+        targetId: item.goal.id,
+        segment: item.segment,
+        confidence: matchConfidence(item.checkIn, standalone),
+        reason: standalone
+          ? "Only one pending routine scope clarification was available, so a standalone scope answer was applied."
+          : "The answer segment mentions the routine goal and contains a scope choice."
+      };
+    })
   };
 }
 
@@ -276,7 +337,7 @@ function clarifiedRoutineTargetTime(rawText: string) {
   return undefined;
 }
 
-function resolveRoutineTargetTime(rawText: string, state: AssistantState) {
+function resolveRoutineTargetTime(rawText: string, state: AssistantState): ResolverResult {
   const candidates = pendingCheckIns(state).filter(
     (checkIn) => checkIn.relatedType === "routine_goal" && checkInClarifies(checkIn, "routine_goal_target_time", routineTargetTimeQuestionPattern)
   );
@@ -287,10 +348,10 @@ function resolveRoutineTargetTime(rawText: string, state: AssistantState) {
       const segment = matchingRoutineSegment(rawText, goal, candidates.length, (item) => Boolean(clarifiedRoutineTargetTime(item)));
       if (!segment) return undefined;
       const targetTime = clarifiedRoutineTargetTime(segment);
-      return targetTime ? { checkIn, targetTime } : undefined;
+      return targetTime ? { checkIn, goal, targetTime, segment } : undefined;
     })
-    .filter((item): item is { checkIn: AssistantCheckIn; targetTime: string } => Boolean(item));
-  if (!matched.length) return { state, changed: false, details: [] as string[] };
+    .filter((item): item is { checkIn: AssistantCheckIn; goal: AssistantState["routineGoals"][number]; targetTime: string; segment: string } => Boolean(item));
+  if (!matched.length) return { state, changed: false, details: [], trace: [] };
 
   const targetTimeByGoalId = new Map(matched.map((item) => [item.checkIn.relatedId, item.targetTime]));
   const now = nowIso();
@@ -312,7 +373,23 @@ function resolveRoutineTargetTime(rawText: string, state: AssistantState) {
       )
     },
     changed: true,
-    details: ["已更新节奏目标时间。"]
+    details: ["已更新节奏目标时间。"],
+    trace: matched.map((item) => {
+      const standalone = !mentionedRoutine(item.segment, item.goal);
+      return {
+        rule: "confirmation.routine_goal_target_time",
+        outcome: "matched",
+        slot: "routine_goal_target_time",
+        checkInId: item.checkIn.id,
+        targetType: "routine_goal",
+        targetId: item.goal.id,
+        segment: item.segment,
+        confidence: matchConfidence(item.checkIn, standalone),
+        reason: standalone
+          ? "Only one pending routine target-time clarification was available, so a standalone time answer was applied."
+          : "The answer segment mentions the routine goal and contains a resolvable target time."
+      };
+    })
   };
 }
 
@@ -428,15 +505,27 @@ export function resolvePendingConfirmations(
   const before = state;
   let next = state;
   const details: string[] = [];
+  const confirmationTrace: ConfirmationTrace[] = [];
 
   [resolveLifeEventTime, resolveRoutineTargetTime, resolveRoutineScope].forEach((resolver) => {
     const result = resolver(rawText, next);
     next = result.state;
     if (result.changed) details.push(...result.details);
+    confirmationTrace.push(...result.trace);
   });
 
   next = cleanupResolvedCheckIns(next);
   if (!details.length) return null;
+  const unhandledText = unresolvedIntentText(rawText, before, next);
+  if (unhandledText) {
+    confirmationTrace.push({
+      rule: "confirmation.unhandled_text",
+      outcome: "unhandled",
+      segment: unhandledText,
+      confidence: 1,
+      reason: "The text includes a new intent cue that was not consumed by pending confirmation resolution."
+    });
+  }
 
   const feedback: ParseFeedback = {
     title: "已更新确认信息",
@@ -447,7 +536,8 @@ export function resolvePendingConfirmations(
   return {
     state: appended.state,
     feedback,
-    unhandledText: unresolvedIntentText(rawText, before, next),
-    sourceInputId: appended.inputId
+    unhandledText,
+    sourceInputId: appended.inputId,
+    confirmationTrace
   };
 }

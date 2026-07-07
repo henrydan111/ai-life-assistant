@@ -672,6 +672,7 @@ async function runStep({ baseUrl, scenario, step, state, repeatIndex, stepIndex 
         requestEchoed: result.clientRequestId === clientRequestId && result.baseRevision === baseRevision,
         safeFailure: result.safeFailure,
         stateUnchanged: result.stateUnchanged,
+        confirmationTrace: result.confirmationTrace ?? [],
         progress: progress.map((item) => ({ stage: item.stage, status: item.status, title: item.title })),
         expectations: expectationResults,
         finalState: summarizeState(after),

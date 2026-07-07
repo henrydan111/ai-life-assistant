@@ -885,6 +885,7 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
         dashboard,
         interpretation,
         feedback: confirmation.feedback,
+        confirmationTrace: confirmation.confirmationTrace ?? [],
         progress
       };
       const expectationResults = step.expectations.map((item) => {
@@ -927,6 +928,7 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
           actions: [],
           memoryWrites: [],
           planTrace: [],
+          confirmationTrace: confirmation.confirmationTrace ?? [],
           progress,
           expectations: expectationResults,
           finalState: summarizeState(after),
@@ -971,6 +973,7 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
       dashboard,
       interpretation,
       feedback: applied.feedback,
+      confirmationTrace: confirmation?.confirmationTrace ?? [],
       progress
     };
     const expectationResults = step.expectations.map((item) => {
@@ -1012,6 +1015,7 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
         actions: summarizeActions(interpretation.actions),
         memoryWrites: interpretation.memoryWrites,
         planTrace: interpretation.planTrace ?? [],
+        confirmationTrace: confirmation?.confirmationTrace ?? [],
         progress,
         expectations: expectationResults,
         finalState: summarizeState(after),
