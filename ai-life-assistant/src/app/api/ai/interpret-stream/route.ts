@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
 import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
+import { resolvePendingConfirmations } from "@/lib/confirmation/resolvePendingConfirmations";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { InterpretResult } from "@/lib/store/interpretResult";
 import type { AiProcessingUpdate, AssistantState, TranscriptRepair } from "@/types/domain";
@@ -57,6 +58,31 @@ export async function POST(request: Request) {
       };
 
       try {
+        const confirmation = resolvePendingConfirmations(rawText, inputType, state, {
+          originalText,
+          transcriptRepair
+        });
+        if (confirmation) {
+          sendProgress({
+            stage: "saving",
+            status: "complete",
+            title: "已更新确认信息",
+            detail: confirmation.feedback.detail
+          });
+          sendProgress({
+            stage: "done",
+            status: "complete",
+            title: "整理完成",
+            detail: confirmation.feedback.detail
+          });
+          streamLine(controller, encoder, {
+            type: "result",
+            ...confirmation,
+            provider: "local_confirmation_resolver"
+          });
+          return;
+        }
+
         if (!canUseAgentPlan()) {
           sendProgress({
             stage: "saving",

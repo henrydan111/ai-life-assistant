@@ -39,6 +39,18 @@ simulated user input
 
 This is intentionally end-to-end enough to catch prompt drift, model behavior changes, schema contract problems, and product-state mistakes.
 
+Every live step also generates a dashboard visibility snapshot:
+
+```text
+applied state
+  -> generateVisibleDashboardSnapshot()
+  -> dashboard-visible assertions / report output
+```
+
+This snapshot mirrors the dashboard sections a user can actually see: today items, shopping, routine goals with related confirmations, open confirmation prompts, suggested memories, and upcoming schedule items with reminders. A scenario should fail when the state looks updated but the dashboard still shows a stale confirmation.
+
+This closes a previous gap: live evals could pass when an entity was updated correctly, while its old pending `checkIns` remained visible on the dashboard. State-level assertions alone are not enough for confirmation-resolution work.
+
 ## Required Environment
 
 Live evals require `.env.local` or shell env with:
@@ -105,6 +117,7 @@ Reports include:
 - model actions
 - memory writes
 - applied final state summary
+- dashboard-visible final snapshot
 - per-expectation failure details
 
 `eval-results/` is ignored by Git because reports may contain user-like scenario text and model outputs.
@@ -113,6 +126,7 @@ Reports include:
 
 The live suite currently covers:
 
+- pending confirmation follow-up visibility on the dashboard
 - complex multi-intent life admin
 - no-op acknowledgement
 - ambiguous travel date
@@ -120,4 +134,4 @@ The live suite currently covers:
 - shopping status update
 - pending memory safety
 
-Add new scenarios when changing prompts, validators, memory policy, fallback behavior, or apply logic. A scenario should represent a real user need and assert the product state after the AI result is applied, not only the raw model JSON.
+Add new scenarios when changing prompts, validators, memory policy, fallback behavior, dashboard rendering, or apply logic. A scenario should represent a real user need and assert both the product state and the dashboard-visible result after the AI result is applied, not only the raw model JSON.

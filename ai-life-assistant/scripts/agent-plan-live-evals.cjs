@@ -33,6 +33,8 @@ const jiti = require("jiti")(__filename, {
 const { applyInterpretation } = jiti("../src/lib/ai/applyInterpretation.ts");
 const { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } = jiti("../src/lib/ai/agentPlan.ts");
 const { defaultAgentPlanLanguageModel } = jiti("../src/lib/ai/modelCatalog.ts");
+const { resolvePendingConfirmations } = jiti("../src/lib/confirmation/resolvePendingConfirmations.ts");
+const { generateVisibleDashboardSnapshot } = jiti("../src/lib/dashboard/visibleDashboardSnapshot.ts");
 
 const originalFetch = global.fetch;
 const requestTimeoutMs = Number(process.env.EVAL_AGENT_PLAN_REQUEST_TIMEOUT_MS ?? 45000);
@@ -200,6 +202,17 @@ function travelPrepCategoryCount(text) {
   ].filter((pattern) => pattern.test(text)).length;
 }
 
+function shanghaiHour(iso) {
+  if (!iso) return undefined;
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return undefined;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    hour: "2-digit",
+    hour12: false
+  }).format(date);
+}
+
 function summarizeActions(actions) {
   return actions.map((action) => {
     if (action.type === "add_task") return `task:${action.title}${action.dueAt ? ` @ ${action.dueAt}` : ""}`;
@@ -238,6 +251,35 @@ function summarizeState(state) {
   };
 }
 
+function summarizeDashboard(dashboard) {
+  return {
+    today: dashboard.today.map((item) => ({
+      title: item.title,
+      meta: item.meta,
+      reminders: item.reminders.map((reminder) => reminder.question)
+    })),
+    shopping: dashboard.shopping.map((item) => ({
+      itemName: item.itemName,
+      status: item.status,
+      expectedAt: item.expectedAt
+    })),
+    routineGoals: dashboard.routineGoals.map((item) => ({
+      title: item.title,
+      meta: item.meta,
+      reminders: item.reminders.map((reminder) => reminder.question)
+    })),
+    openConfirmations: dashboard.openConfirmations.map((item) => item.question),
+    suggestedMemories: dashboard.suggestedMemories.map((item) => item.summary),
+    upcoming: dashboard.upcoming.map((item) => ({
+      title: item.title,
+      meta: item.meta,
+      reminders: item.reminders.map((reminder) => reminder.question)
+    })),
+    dashboardPrompts: dashboard.dashboardPrompts.map((item) => item.question),
+    visibleText: dashboard.visibleText
+  };
+}
+
 function expect(name, points, check, options = {}) {
   return {
     name,
@@ -256,6 +298,89 @@ function normalizeCheckResult(result) {
 }
 
 const scenarios = [
+  {
+    id: "pending_confirmation_followup_dashboard",
+    title: "多轮确认：补充信息后 dashboard 不显示旧追问",
+    tags: ["smoke", "dashboard", "clarification", "state-update"],
+    minScoreRatio: 1,
+    state: () =>
+      createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: "2026-01-01T08:00:00.000Z",
+            updatedAt: "2026-01-01T08:00:00.000Z"
+          }
+        ],
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "unspecified",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: "2026-01-01T08:00:00.000Z",
+            updatedAt: "2026-01-01T08:00:00.000Z"
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: "2026-01-01T08:00:00.000Z",
+            status: "pending",
+            createdAt: "2026-01-01T08:00:00.000Z"
+          },
+          {
+            id: "check_sleep_scope",
+            title: "确认日常目标",
+            question: "你想把每天12点前睡觉设置为短期目标还是长期目标？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: "2026-01-01T08:00:00.000Z",
+            status: "pending",
+            createdAt: "2026-01-01T08:00:00.000Z"
+          }
+        ]
+      }),
+    steps: [
+      {
+        rawText: "周日下午2点去上海。每天12点前睡是短期目标",
+        expectations: [
+          expect("上海活动回填到周日下午 2 点", 3, ({ after }) => {
+            const event = plannedEvents(after, /上海/)[0];
+            if (!event) return "缺少上海 life_event";
+            if (!event.startsAt) return "上海 life_event 缺少 startsAt";
+            return shanghaiHour(event.startsAt) === "14" || `startsAt=${event.startsAt}`;
+          }),
+          expect("睡眠目标范围已回填为短期/最近", 2, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠 routine goal";
+            return goal.scope === "recent" || /短期|最近/.test(goal.scopeLabel ?? "") || `scope=${goal.scope}, scopeLabel=${goal.scopeLabel}`;
+          }),
+          expect("dashboard 不再显示上海出行时间旧追问", 3, ({ dashboard }) => {
+            return !/上海.*(具体出行|出行开始|什么时候|哪天|时间)|具体出行.*上海|出行开始时间/.test(dashboard.visibleText)
+              ? true
+              : dashboard.visibleText;
+          }),
+          expect("dashboard 不再显示短期/长期旧追问", 2, ({ dashboard }) => {
+            return !/(短期目标还是长期目标|长期目标|确认日常目标)/.test(dashboard.visibleText) ? true : dashboard.visibleText;
+          })
+        ]
+      }
+    ]
+  },
   {
     id: "routine_sleep_goal",
     title: "节奏目标：最近每天半夜 12 点前睡觉",
@@ -588,6 +713,69 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
   const stepLabel = `${scenario.id}#${stepIndex + 1}${repeatIndex > 0 ? `/repeat${repeatIndex + 1}` : ""}`;
 
   try {
+    const confirmation = resolvePendingConfirmations(step.rawText, step.inputType ?? "text", state);
+    if (confirmation) {
+      const after = confirmation.state;
+      const dashboard = generateVisibleDashboardSnapshot(after);
+      const interpretation = { actions: [], memoryWrites: [], planTrace: [] };
+      const ctx = {
+        scenario,
+        step,
+        before,
+        after,
+        dashboard,
+        interpretation,
+        feedback: confirmation.feedback,
+        progress
+      };
+      const expectationResults = step.expectations.map((item) => {
+        try {
+          const check = normalizeCheckResult(item.check(ctx));
+          return {
+            name: item.name,
+            points: item.points,
+            required: item.required,
+            pass: check.pass,
+            detail: check.detail
+          };
+        } catch (error) {
+          return {
+            name: item.name,
+            points: item.points,
+            required: item.required,
+            pass: false,
+            detail: error instanceof Error ? error.message : String(error)
+          };
+        }
+      });
+      const earned = expectationResults.filter((item) => item.pass).reduce((total, item) => total + item.points, 0);
+      const total = expectationResults.reduce((sum, item) => sum + item.points, 0);
+      const requiredFailed = expectationResults.some((item) => item.required && !item.pass);
+
+      return {
+        ok: !requiredFailed,
+        state: after,
+        result: {
+          id: stepLabel,
+          ok: !requiredFailed,
+          durationMs: Math.round(performance.now() - started),
+          score: total ? Number((earned / total).toFixed(3)) : 1,
+          earned,
+          total,
+          rawText: step.rawText,
+          feedback: confirmation.feedback,
+          provider: "local_confirmation_resolver",
+          actions: [],
+          memoryWrites: [],
+          planTrace: [],
+          progress,
+          expectations: expectationResults,
+          finalState: summarizeState(after),
+          finalDashboard: summarizeDashboard(dashboard)
+        }
+      };
+    }
+
     const interpretation = await interpretWithAgentPlan({
       rawText: step.rawText,
       inputType: step.inputType ?? "text",
@@ -599,11 +787,13 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
     });
     const applied = applyInterpretation(step.rawText, step.inputType ?? "text", state, interpretation);
     const after = applied.state;
+    const dashboard = generateVisibleDashboardSnapshot(after);
     const ctx = {
       scenario,
       step,
       before,
       after,
+      dashboard,
       interpretation,
       feedback: applied.feedback,
       progress
@@ -649,7 +839,8 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
         planTrace: interpretation.planTrace ?? [],
         progress,
         expectations: expectationResults,
-        finalState: summarizeState(after)
+        finalState: summarizeState(after),
+        finalDashboard: summarizeDashboard(dashboard)
       }
     };
   } catch (error) {

@@ -1,0 +1,303 @@
+import { createId } from "@/lib/id";
+import { parseDueDate, nowIso } from "@/lib/time/parseTime";
+import type { AssistantCheckIn, AssistantState, ParseFeedback, RawInput, TranscriptRepair } from "@/types/domain";
+
+type ResolveOptions = {
+  originalText?: string;
+  transcriptRepair?: TranscriptRepair;
+};
+
+export type PendingConfirmationResolution = {
+  state: AssistantState;
+  feedback: ParseFeedback;
+};
+
+const timeQuestionPattern = /(时间|哪天|什么时候|几点|日期|开始|出行)/;
+const routineScopeQuestionPattern = /(短期|长期|范围|持续|多久|最近|试)/;
+const routineTargetTimeQuestionPattern = /(12点|十二点|中午|午夜|半夜|晚上|凌晨|几点|时间)/;
+
+function normalize(text: string) {
+  return text.trim().toLowerCase().replace(/[，。,.!?！？；;]/g, " ");
+}
+
+function similar(left: string, right: string) {
+  const a = normalize(left);
+  const b = normalize(right);
+  return a.includes(b) || b.includes(a);
+}
+
+function appendInput(
+  state: AssistantState,
+  rawText: string,
+  inputType: "text" | "voice",
+  feedback: ParseFeedback,
+  options: ResolveOptions
+) {
+  const now = nowIso();
+  const input: RawInput = {
+    id: createId("input"),
+    rawText,
+    originalText: options.originalText && options.originalText !== rawText ? options.originalText : undefined,
+    transcriptRepair: options.transcriptRepair
+      ? {
+          confidence: options.transcriptRepair.confidence,
+          needsUserConfirmation: options.transcriptRepair.needsUserConfirmation,
+          question: options.transcriptRepair.question,
+          repairs: options.transcriptRepair.repairs
+        }
+      : undefined,
+    inputType,
+    parsedSummary: feedback.title,
+    createdAt: now
+  };
+
+  return {
+    ...state,
+    inputs: [input, ...state.inputs].slice(0, 60)
+  };
+}
+
+function checkInText(checkIn: AssistantCheckIn) {
+  return `${checkIn.title} ${checkIn.question}`;
+}
+
+function pendingCheckIns(state: AssistantState) {
+  return state.checkIns.filter((checkIn) => checkIn.status === "pending");
+}
+
+function mentionedEvent(rawText: string, event: AssistantState["lifeEvents"][number]) {
+  return Boolean(
+    (event.location && rawText.includes(event.location)) ||
+      similar(rawText, event.title) ||
+      event.title.split(/\s+|，|。|、/).some((part) => part.length >= 2 && rawText.includes(part))
+  );
+}
+
+function textSegments(rawText: string) {
+  return rawText
+    .split(/然后|另外|还有|并且|，|。|；|,|;|\n/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function eventTimeFromRawText(rawText: string, event: AssistantState["lifeEvents"][number], onlyCandidate: boolean) {
+  const segment = textSegments(rawText).find((item) => mentionedEvent(item, event));
+  return parseDueDate(segment ?? (onlyCandidate ? rawText : ""));
+}
+
+function mentionedRoutine(rawText: string, goal: AssistantState["routineGoals"][number]) {
+  return similar(rawText, goal.title) || /(睡觉|睡|上床|入睡|休息|作息|早睡)/.test(rawText + goal.title);
+}
+
+function resolveLifeEventTime(rawText: string, state: AssistantState) {
+  const onlyPendingCheckIn = pendingCheckIns(state).length === 1;
+  const candidates = pendingCheckIns(state).filter(
+    (checkIn) => checkIn.relatedType === "life_event" && timeQuestionPattern.test(checkInText(checkIn))
+  );
+  const matched = candidates
+    .map((checkIn) => {
+      const event = state.lifeEvents.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
+      if (!event || (!mentionedEvent(rawText, event) && !onlyPendingCheckIn)) return undefined;
+      const startsAt = eventTimeFromRawText(rawText, event, onlyPendingCheckIn);
+      return startsAt ? { checkIn, event, startsAt } : undefined;
+    })
+    .filter((item): item is { checkIn: AssistantCheckIn; event: AssistantState["lifeEvents"][number]; startsAt: string } =>
+      Boolean(item)
+    );
+  if (!matched.length) return { state, changed: false, details: [] as string[] };
+
+  const startsByEventId = new Map(matched.map((item) => [item.event.id, item.startsAt]));
+  const now = nowIso();
+  return {
+    state: {
+      ...state,
+      lifeEvents: state.lifeEvents.map((event) =>
+        startsByEventId.has(event.id)
+          ? {
+              ...event,
+              startsAt: startsByEventId.get(event.id),
+              updatedAt: now
+            }
+          : event
+      ),
+      checkIns: state.checkIns.map((checkIn) =>
+        matched.some((item) => item.checkIn.id === checkIn.id) ? { ...checkIn, status: "dismissed" as const } : checkIn
+      )
+    },
+    changed: true,
+    details: ["已更新出行/日程时间。"]
+  };
+}
+
+function routineScope(rawText: string) {
+  if (/(短期|最近|近期|这段时间|先试|试一周|一周)/.test(rawText)) {
+    return {
+      scope: "recent" as const,
+      scopeLabel: /一周|试一周/.test(rawText) ? "先试一周" : "短期"
+    };
+  }
+  if (/(长期|一直|持续保持|长期坚持)/.test(rawText)) {
+    return {
+      scope: "ongoing" as const,
+      scopeLabel: "长期"
+    };
+  }
+  return undefined;
+}
+
+function resolveRoutineScope(rawText: string, state: AssistantState) {
+  const scope = routineScope(rawText);
+  if (!scope) return { state, changed: false, details: [] as string[] };
+
+  const candidates = pendingCheckIns(state).filter(
+    (checkIn) => checkIn.relatedType === "routine_goal" && routineScopeQuestionPattern.test(checkInText(checkIn))
+  );
+  const matched = candidates.filter((checkIn) => {
+    const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
+    return goal && (mentionedRoutine(rawText, goal) || candidates.length === 1);
+  });
+  if (!matched.length) return { state, changed: false, details: [] as string[] };
+
+  const matchedIds = new Set(matched.map((checkIn) => checkIn.relatedId));
+  const now = nowIso();
+  return {
+    state: {
+      ...state,
+      routineGoals: state.routineGoals.map((goal) =>
+        matchedIds.has(goal.id)
+          ? {
+              ...goal,
+              scope: scope.scope,
+              scopeLabel: scope.scopeLabel,
+              updatedAt: now
+            }
+          : goal
+      ),
+      checkIns: state.checkIns.map((checkIn) =>
+        matched.some((item) => item.id === checkIn.id) ? { ...checkIn, status: "dismissed" as const } : checkIn
+      )
+    },
+    changed: true,
+    details: ["已更新节奏目标范围。"]
+  };
+}
+
+function clarifiedRoutineTargetTime(rawText: string) {
+  if (/((中午|正午)\s*(12|十二)\s*点|(12|十二)\s*点\s*(中午|正午))/.test(rawText)) {
+    return "12:00";
+  }
+  if (/(半夜|午夜|零点|零时|0点|0\s*[:：]\s*00|24点|二十四点|晚上\s*(12|十二)\s*点|夜里\s*(12|十二)\s*点|凌晨\s*(12|十二)\s*点)/.test(rawText)) {
+    return "00:00";
+  }
+  const earlyMorning = rawText.match(/(凌晨|清晨|夜里)\s*(\d{1,2})\s*[点:：]\s*(\d{1,2})?/);
+  if (earlyMorning) {
+    const hour = Number(earlyMorning[2]);
+    const minute = earlyMorning[3] ? Number(earlyMorning[3]) : 0;
+    if (hour >= 0 && hour <= 11 && minute >= 0 && minute <= 59) {
+      return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+  }
+  const evening = rawText.match(/(晚上|晚间|今晚|每晚)\s*(\d{1,2})\s*[点:：]\s*(\d{1,2})?/);
+  if (evening) {
+    const hour = Number(evening[2]);
+    const minute = evening[3] ? Number(evening[3]) : 0;
+    if (hour >= 6 && hour <= 11 && minute >= 0 && minute <= 59) {
+      return `${String(hour + 12).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+  }
+  const clock = rawText.match(/\b([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)\b/);
+  if (clock) {
+    return `${String(Number(clock[1])).padStart(2, "0")}:${clock[2]}`;
+  }
+  return undefined;
+}
+
+function resolveRoutineTargetTime(rawText: string, state: AssistantState) {
+  const targetTime = clarifiedRoutineTargetTime(rawText);
+  if (!targetTime) return { state, changed: false, details: [] as string[] };
+
+  const candidates = pendingCheckIns(state).filter(
+    (checkIn) => checkIn.relatedType === "routine_goal" && routineTargetTimeQuestionPattern.test(checkInText(checkIn))
+  );
+  const matched = candidates.filter((checkIn) => {
+    const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
+    return goal && (mentionedRoutine(rawText, goal) || candidates.length === 1);
+  });
+  if (!matched.length) return { state, changed: false, details: [] as string[] };
+
+  const matchedIds = new Set(matched.map((checkIn) => checkIn.relatedId));
+  const now = nowIso();
+  return {
+    state: {
+      ...state,
+      routineGoals: state.routineGoals.map((goal) =>
+        matchedIds.has(goal.id)
+          ? {
+              ...goal,
+              targetTime,
+              targetTimeRelation: goal.targetTimeRelation ?? "before",
+              updatedAt: now
+            }
+          : goal
+      ),
+      checkIns: state.checkIns.map((checkIn) =>
+        matched.some((item) => item.id === checkIn.id) ? { ...checkIn, status: "dismissed" as const } : checkIn
+      )
+    },
+    changed: true,
+    details: ["已更新节奏目标时间。"]
+  };
+}
+
+export function cleanupResolvedCheckIns(state: AssistantState): AssistantState {
+  return {
+    ...state,
+    checkIns: state.checkIns.map((checkIn) => {
+      if (checkIn.status !== "pending") return checkIn;
+      if (checkIn.relatedType === "life_event" && timeQuestionPattern.test(checkInText(checkIn))) {
+        const event = state.lifeEvents.find((item) => item.id === checkIn.relatedId);
+        return event?.startsAt ? { ...checkIn, status: "dismissed" as const } : checkIn;
+      }
+      if (checkIn.relatedType === "routine_goal") {
+        const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId);
+        if (!goal) return checkIn;
+        if (routineTargetTimeQuestionPattern.test(checkInText(checkIn)) && goal.targetTime) {
+          return { ...checkIn, status: "dismissed" as const };
+        }
+        if (routineScopeQuestionPattern.test(checkInText(checkIn)) && goal.scope !== "unspecified") {
+          return { ...checkIn, status: "dismissed" as const };
+        }
+      }
+      return checkIn;
+    })
+  };
+}
+
+export function resolvePendingConfirmations(
+  rawText: string,
+  inputType: "text" | "voice",
+  state: AssistantState,
+  options: ResolveOptions = {}
+): PendingConfirmationResolution | null {
+  let next = state;
+  const details: string[] = [];
+
+  [resolveLifeEventTime, resolveRoutineTargetTime, resolveRoutineScope].forEach((resolver) => {
+    const result = resolver(rawText, next);
+    next = result.state;
+    if (result.changed) details.push(...result.details);
+  });
+
+  next = cleanupResolvedCheckIns(next);
+  if (!details.length) return null;
+
+  const feedback: ParseFeedback = {
+    title: "已更新确认信息",
+    detail: Array.from(new Set(details)).join(" ")
+  };
+
+  return {
+    state: appendInput(next, rawText, inputType, feedback, options),
+    feedback
+  };
+}

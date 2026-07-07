@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
 import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
+import { resolvePendingConfirmations } from "@/lib/confirmation/resolvePendingConfirmations";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { AssistantState, TranscriptRepair } from "@/types/domain";
 
@@ -34,6 +35,16 @@ export async function POST(request: Request) {
   }
 
   const inputType = body.inputType === "voice" ? "voice" : "text";
+  const confirmation = resolvePendingConfirmations(body.rawText, inputType, body.state, {
+    originalText: body.originalText,
+    transcriptRepair: body.transcriptRepair
+  });
+  if (confirmation) {
+    return NextResponse.json({
+      ...confirmation,
+      provider: "local_confirmation_resolver"
+    });
+  }
 
   if (!canUseAgentPlan()) {
     const result = parseLocalInput(body.rawText, body.state, inputType);

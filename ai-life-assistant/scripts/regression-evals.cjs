@@ -20,6 +20,8 @@ const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
+const { generateVisibleDashboardSnapshot } = jiti("../src/lib/dashboard/visibleDashboardSnapshot.ts");
+const { resolvePendingConfirmations } = jiti("../src/lib/confirmation/resolvePendingConfirmations.ts");
 
 const fixedNow = "2026-01-01T08:00:00.000Z";
 
@@ -111,6 +113,229 @@ function assertFeedbackStateConsistency(before, after, feedback) {
 }
 
 const evals = [
+  {
+    name: "dashboard snapshot exposes confirmation text users can see",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "missing_trip",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const dashboard = generateVisibleDashboardSnapshot(state);
+
+      assert.match(dashboard.visibleText, /确认睡眠目标时间/);
+      assert.match(dashboard.visibleText, /中午12点|午夜12点/);
+      assert.match(dashboard.visibleText, /具体出行开始时间/);
+    }
+  },
+  {
+    name: "pending confirmation resolver updates event time and routine scope",
+    run() {
+      const state = createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "unspecified",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_sleep_scope",
+            title: "确认日常目标",
+            question: "你想把每天12点前睡觉设置为短期目标还是长期目标？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const result = resolvePendingConfirmations("周日下午2点去上海。每天12点前睡是短期目标", "text", state);
+      assert.ok(result);
+      const event = result.state.lifeEvents.find((item) => item.id === "event_shanghai");
+      const goal = result.state.routineGoals.find((item) => item.id === "routine_sleep");
+      const dashboard = generateVisibleDashboardSnapshot(result.state);
+
+      assert.ok(event.startsAt);
+      assert.equal(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", hour: "2-digit", hour12: false }).format(new Date(event.startsAt)), "14");
+      assert.equal(goal.scope, "recent");
+      assert.equal(result.state.checkIns.every((checkIn) => checkIn.status !== "pending"), true);
+      assert.doesNotMatch(dashboard.visibleText, /具体出行开始时间|短期目标还是长期目标/);
+    }
+  },
+  {
+    name: "pending confirmation resolver updates routine target time",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const result = resolvePendingConfirmations("晚上12点", "text", state);
+      assert.ok(result);
+      const goal = result.state.routineGoals.find((item) => item.id === "routine_sleep");
+
+      assert.equal(goal.targetTime, "00:00");
+      assert.equal(goal.targetTimeRelation, "before");
+      assert.equal(result.state.checkIns[0].status, "dismissed");
+    }
+  },
+  {
+    name: "pending confirmation resolver does not apply bare time to unrelated event",
+    run() {
+      const state = createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const result = resolvePendingConfirmations("晚上12点", "text", state);
+      assert.ok(result);
+      const event = result.state.lifeEvents.find((item) => item.id === "event_shanghai");
+      const goal = result.state.routineGoals.find((item) => item.id === "routine_sleep");
+
+      assert.equal(event.startsAt, undefined);
+      assert.equal(goal.targetTime, "00:00");
+      assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_trip_time").status, "pending");
+      assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_sleep_time").status, "dismissed");
+    }
+  },
   {
     name: "suggested memories are isolated from stable memory context",
     run() {
@@ -260,6 +485,21 @@ const evals = [
       assert.equal(resolution.evidence, "explicit_evening");
       assert.equal(resolution.targetTime, "23:00");
       assert.equal(resolution.targetTimeRelation, "before");
+    }
+  },
+  {
+    name: "temporal policy handles evening and early-morning minute sleep times",
+    run() {
+      const evening = resolveRecurringSleepTarget("我最近希望每晚11点半前睡觉。");
+      const digital = resolveRecurringSleepTarget("我最近希望每天23:30前睡觉。");
+      const early = resolveRecurringSleepTarget("我最近希望每天凌晨1点前睡觉。");
+      const ambiguous = resolveRecurringSleepTarget("我最近希望每天11点半前睡觉。");
+
+      assert.equal(evening.targetTime, "23:30");
+      assert.equal(digital.targetTime, "23:30");
+      assert.equal(early.targetTime, "01:00");
+      assert.equal(ambiguous.ambiguity, "ampm");
+      assert.equal(ambiguous.targetTime, undefined);
     }
   },
   {
@@ -639,6 +879,41 @@ const evals = [
       assert.equal(goals[0].scope, "recent");
       assert.equal(result.checkIns.filter((checkIn) => checkIn.relatedType === "routine_goal" && checkIn.relatedId === goals[0].id).length, 1);
       assert.equal(activeTasks(result, /睡觉|睡|休息/).length, 0);
+    }
+  },
+  {
+    name: "AI interpretation suppresses routine goal duplicate memory writes",
+    run() {
+      const result = applyInterpretation("我最近希望能够每天半夜12点前睡觉。", "text", createState(), {
+        feedback: { title: "已记录", detail: "已记录睡眠节奏目标。" },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天 00:00 前睡觉",
+            cadence: "daily",
+            targetTime: "00:00",
+            targetTimeRelation: "before",
+            scope: "recent",
+            scopeLabel: "最近"
+          }
+        ],
+        memoryWrites: [
+          {
+            type: "recurring_pattern",
+            summary: "用户最近希望每天半夜12点前睡觉。",
+            tags: ["睡觉", "作息"],
+            entities: ["睡觉"],
+            confidence: 0.9,
+            requiresConfirmation: true,
+            evidence: "用户说最近希望每天半夜12点前睡觉。"
+          }
+        ]
+      }).state;
+
+      assert.equal(activeRoutineGoals(result, /睡觉|睡|休息/).length, 1);
+      assert.equal(result.memoryItems.length, 0);
+      assert.equal(result.checkIns.filter((checkIn) => checkIn.relatedType === "memory").length, 0);
     }
   },
   {
