@@ -1,5 +1,5 @@
 import {
-  normalizeAiInterpretation,
+  parseAiInterpretation,
   validateActionArraySchema,
   validateAiInterpretationSchema,
   type AiInterpretation,
@@ -43,15 +43,15 @@ function readArray(record: Record<string, unknown>, snakeKey: string, camelKey: 
 }
 
 function normalizeActionArray(value: unknown) {
-  return normalizeAiInterpretation({
+  return parseAiInterpretation({
     feedback: { title: "中间结果", detail: "中间结果" },
     actions: rawArray(value)
-  })?.actions ?? [];
+  }).value?.actions ?? [];
 }
 
 export function normalizeIntentUnderstanding(value: unknown): IntentUnderstanding | null {
   if (!isRecord(value)) return null;
-  const interpretation = normalizeAiInterpretation(value);
+  const interpretation = parseAiInterpretation(value).value;
   if (!interpretation) return null;
 
   return {
@@ -113,15 +113,48 @@ export function validateCoverage(rawText: string, coverage: CoverageReview, raw:
   if (!isRecord(raw) || (!Array.isArray(raw.revised_actions) && !Array.isArray(raw.revisedActions))) {
     errors.push("revised_actions 必须返回完整 action 列表，不能省略或改名为其他字段。");
   }
-  if (!coverage.revisedActions.length) {
-    errors.push("revised_actions 必须返回完整 action 列表，不能省略。");
-  }
+  return errors;
+}
+
+function validateCheckInReferences(actions: InterpretAction[]) {
+  const errors: string[] = [];
+  const refs = new Map<string, InterpretAction["type"]>();
+  actions.forEach((action) => {
+    if ("ref" in action && action.ref) refs.set(action.ref, action.type);
+  });
+
+  actions.forEach((action, index) => {
+    if (action.type !== "add_check_in") return;
+    if (action.relatedType === "project") return;
+    if (!action.relatedRef && !action.relatedId) {
+      errors.push(`actions[${index}] add_check_in relatedType=${action.relatedType} 时必须提供 relatedRef 或 relatedId。`);
+      return;
+    }
+    if (!action.relatedRef) return;
+
+    const refType = refs.get(action.relatedRef);
+    if (!refType) {
+      errors.push(`actions[${index}] add_check_in relatedRef="${action.relatedRef}" 没有对应的主 action ref。`);
+      return;
+    }
+    const expectedType =
+      action.relatedType === "life_event"
+        ? "add_life_event"
+        : action.relatedType === "shopping_item"
+          ? "add_shopping_item"
+          : "add_task";
+    if (refType !== expectedType) {
+      errors.push(`actions[${index}] add_check_in relatedRef="${action.relatedRef}" 指向 ${refType}，但 relatedType=${action.relatedType}。`);
+    }
+  });
+
   return errors;
 }
 
 export function validateFinalInterpretation(rawText: string, interpretation: AiInterpretation, raw?: unknown) {
   return [
     ...(raw === undefined ? [] : validateAiInterpretationSchema(raw)),
-    ...validateCoreIntentCoverage(rawText, interpretation.actions, interpretation.feedback.question, true)
+    ...validateCoreIntentCoverage(rawText, interpretation.actions, interpretation.feedback.question, true),
+    ...validateCheckInReferences(interpretation.actions)
   ];
 }

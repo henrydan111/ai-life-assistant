@@ -21,6 +21,7 @@ const doneWords = /\b(done|finished|completed|bought|ordered)\b|完成了|做完
 const travelWords = /\b(go to|travel to|trip to|visit)\b|去|出差|出游|旅行/;
 const classWords = /class|lesson|兴趣班|补习|课程|接送/;
 const taskIntentWords = /\b(send|finish|call|email|review|remind|complete|prepare|write)\b|完成|发送|打电话|整理|准备|写/;
+const noOpWords = /^(谢谢|谢了|谢啦|不用了|不用|没事了|算了|先不用|先别|刚才说错了|说错了|不是这个意思|ok|okay|thanks|thank you|never mind|nevermind|cancel that)$/i;
 
 function normalize(text: string) {
   return text.trim().toLowerCase().replace(/[，。,.!?！？]/g, " ");
@@ -204,6 +205,10 @@ function parseLocation(text: string) {
   return chinese?.[1]?.trim();
 }
 
+function isNoOpInput(text: string) {
+  return noOpWords.test(normalize(text).trim());
+}
+
 export function parseLocalInput(rawText: string, state: AssistantState, inputType: "text" | "voice"): ParseResult {
   const text = rawText.trim();
   const lower = normalize(text);
@@ -227,6 +232,13 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
     return {
       state,
       feedback: { title: "没有需要添加的内容", detail: "可以直接说或输入想让我记下的事。" }
+    };
+  }
+
+  if (isNoOpInput(text)) {
+    return {
+      state: next,
+      feedback: { title: "没有更改", detail: "我没有保存或修改任何事项。" }
     };
   }
 
@@ -328,7 +340,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
 
   if (travelWords.test(lower) && parseLocation(text)) {
     const location = parseLocation(text)!;
-    const startsAt = parseDueDate(text) ?? new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    const startsAt = parseDueDate(text);
     const title = /[\u4e00-\u9fa5]/.test(text) ? `去${location}` : `Trip to ${location}`;
     const existingEvent = findSimilarLifeEvent(next.lifeEvents, title, location, startsAt);
     const event: LifeEvent = {
@@ -337,57 +349,71 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
       category: "travel",
       startsAt,
       location,
-      priority: "high",
+      priority: startsAt ? "high" : "medium",
       participants: [],
       status: "planned",
       sourceInputId: inputId,
       createdAt: existingEvent?.createdAt ?? now,
       updatedAt: now
     };
-    const packTitle = /[\u4e00-\u9fa5]/.test(text) ? `准备去${location}的行李` : `Pack for ${location}`;
-    const packDueAt = dayBeforeAt(startsAt, 21);
-    const packTask: Task = {
-      id: createId("task"),
-      title: packTitle,
-      type: "task",
-      horizon: "today",
-      dueAt: packDueAt,
-      energyRequired: "medium",
-      priority: "high",
-      status: "todo",
-      sourceInputId: inputId,
-      confidence: 0.78,
-      createdAt: now,
-      updatedAt: now
-    };
-    const checkIn: AssistantCheckIn = {
-      id: createId("check"),
-      title: "Travel prep",
-      question: /[\u4e00-\u9fa5]/.test(text)
-        ? `去${location}的票买好了吗？行李收拾好了吗？`
-        : `Do you have tickets and packing handled for ${location}?`,
-      relatedType: "life_event",
-      relatedId: event.id,
-      askAt: dayBeforeAt(startsAt, 20),
-      status: "pending",
-      createdAt: now
-    };
     const lifeEvents = existingEvent
       ? next.lifeEvents.map((item) => (item.id === existingEvent.id ? { ...item, ...event } : item))
       : [event, ...next.lifeEvents];
-    const tasks = findOpenTask(next.tasks, packTitle, packDueAt) ? next.tasks : [packTask, ...next.tasks];
-    const checkIns = hasSimilarCheckIn(next.checkIns, checkIn.title, checkIn.question, "life_event", event.id)
-      ? next.checkIns
-      : [checkIn, ...next.checkIns];
+    const prepAskAt = startsAt ? dayBeforeAt(startsAt, 20) : now;
+    const checkInCandidates: AssistantCheckIn[] = startsAt
+      ? [
+          {
+            id: createId("check"),
+            title: /[\u4e00-\u9fa5]/.test(text) ? "确认车票" : "Confirm tickets",
+            question: /[\u4e00-\u9fa5]/.test(text) ? `去${location}的票买好了吗？` : `Do you have tickets handled for ${location}?`,
+            relatedType: "life_event",
+            relatedId: event.id,
+            askAt: prepAskAt,
+            status: "pending",
+            createdAt: now
+          },
+          {
+            id: createId("check"),
+            title: /[\u4e00-\u9fa5]/.test(text) ? "收拾行李" : "Pack luggage",
+            question: /[\u4e00-\u9fa5]/.test(text) ? `去${location}的行李收拾好了吗？` : `Is packing handled for ${location}?`,
+            relatedType: "life_event",
+            relatedId: event.id,
+            askAt: prepAskAt,
+            status: "pending",
+            createdAt: now
+          }
+        ]
+      : [
+          {
+            id: createId("check"),
+            title: /[\u4e00-\u9fa5]/.test(text) ? "确认出行时间" : "Confirm trip date",
+            question: /[\u4e00-\u9fa5]/.test(text) ? `你打算哪天去${location}？` : `When are you planning to go to ${location}?`,
+            relatedType: "life_event",
+            relatedId: event.id,
+            askAt: now,
+            status: "pending",
+            createdAt: now
+          }
+        ];
+    const checkIns = checkInCandidates.reduce(
+      (items, checkIn) =>
+        hasSimilarCheckIn(items, checkIn.title, checkIn.question, "life_event", event.id) ? items : [checkIn, ...items],
+      next.checkIns
+    );
     next = {
       ...next,
       lifeEvents,
-      tasks,
       checkIns
     };
     return {
       state: next,
-      feedback: { title: "出行已记录", detail: `我已为${location}加上行前准备。` }
+      feedback: startsAt
+        ? { title: "出行已记录", detail: `我已为${location}加上独立的行前确认。` }
+        : {
+            title: "出行已暂存",
+            detail: `我先记下去${location}，但没有编造日期。`,
+            question: /[\u4e00-\u9fa5]/.test(text) ? `你打算哪天去${location}？` : `When are you planning to go to ${location}?`
+          }
     };
   }
 

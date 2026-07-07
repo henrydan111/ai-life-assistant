@@ -16,6 +16,7 @@ export function InputPageClient() {
       <div className="mx-auto grid max-w-2xl gap-4">
         <CaptureBox
           feedback={feedback}
+          timezone={store.state.preferences.timezone}
           onSubmit={async (text, inputType, onProgress, metadata) => {
             const result = await store.submitInput(text, inputType, onProgress, metadata);
             setFeedback(result);

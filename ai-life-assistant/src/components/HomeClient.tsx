@@ -283,6 +283,7 @@ export function HomeClient() {
             }}
           >
             <CaptureBox
+              timezone={store.state.preferences.timezone}
               conversationTarget={conversationTarget}
               onClearConversationTarget={() => setConversationTarget(undefined)}
               onSubmit={async (text, inputType, onProgress, metadata) => {

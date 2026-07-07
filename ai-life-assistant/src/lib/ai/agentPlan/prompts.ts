@@ -11,6 +11,7 @@ export const ACTION_SCHEMA = `
     { "type": "mark_task_done", "matchTitle": "..." }
   ]
 }
+如果用户只是寒暄、确认、取消意图不明确，或没有需要保存/更新/追问的生活管理事项，actions 必须返回空数组 []，不要为了有输出而编造任务。
 `.trim();
 
 export const UNDERSTANDING_PROMPT = `
@@ -21,6 +22,7 @@ export const UNDERSTANDING_PROMPT = `
 - 不要只保留最后一个、最明显的、或最容易解析的意图。
 - 对每个意图判断它属于：待办、日程、购物、提醒、追问、长期记忆。
 - 如果信息不足，不要猜；生成 add_check_in 或在 feedback.question 中追问。
+- 如果用户只是“谢谢”“不用了”“刚才说错了”这类没有明确可保存事项的表达，actions 返回 []，feedback 简短说明没有改动。
 - 这一阶段可以保留较细粒度动作；是否合并成一个主活动由第三步决定。
 - 如果 payload.validation.errors 存在，说明上一轮 JSON 没有通过本地完整性校验；必须修正 errors 指出的缺失，并重新输出完整 JSON。
 - 输出必须是 JSON，不要 Markdown，不要解释。
@@ -49,6 +51,7 @@ export const COVERAGE_PROMPT = `
 - 不要删除已有正确 action。
 - 不要做最终产品合并；这一阶段只负责“没有遗漏”。
 - 如果信息不足，不要猜具体时间；补充 add_check_in 或在遗漏说明中指出需要追问。
+- 如果原文没有需要保存/更新/追问的生活管理意图，coverage 可以是 "complete"，missing_intents 和 revised_actions 都返回 []。
 - 如果 payload.validation.errors 存在，说明上一轮 JSON 没有通过本地完整性校验；必须修正 errors 指出的缺失，并重新输出完整 JSON。
 - 输出必须是 JSON，不要 Markdown，不要解释。
 
@@ -98,6 +101,7 @@ ${ACTION_SCHEMA}
 - 用户说已经买好或已下单某物：更新购物状态，不要再创建购买待办。
 - 用户提到出行：新增一个 life_event；把订票、行李、酒店、路线、餐馆订位等分别生成独立 check-in，挂在同一个 life_event 下。
 - 用户提到孩子兴趣班但缺持续时间：生成 check-in 追问持续多久和提前多久出门。
+- 用户只是寒暄、撤回不明确、或没有可执行生活管理意图时，actions 返回 []，不要创建占位待办。
 - 用户表达疲惫、压力或低能量：添加 mood log，并降低反馈语气压力。
 - 只在用户明确表达完成/买好/下单时使用 mark 或 update。
 - priority 用于 add_task 和 add_life_event，不用于 check-in。high 表示有明确后果、外部承诺、需要他人配合、阻塞后续安排或用户明确说“重要/必须/尽快”；medium 表示正常计划内事项或有时间但后果不强；low 表示可选、顺手、无明确截止或用户表达“不急”。不要仅因为有 dueAt/startsAt 就设为 high。
@@ -112,6 +116,7 @@ ${ACTION_SCHEMA}
 - 低风险且明确的事实可以 requiresConfirmation: false，例如“用户家里有多个孩子”，但 summary 仍要简洁。
 - memoryContext.pendingConfirmations 里的内容尚未经过用户确认，不能当作事实使用；只可用于避免重复提出同一条记忆确认。
 - feedback.detail 要概括本次识别出的事项数量或主要类型，避免只提其中一个事项。
+- 如果 actions 为空，feedback.detail 必须明确告诉用户这次没有保存或更改任何事项。
 - 如果 payload.validation.errors 存在，说明上一轮 JSON 没有通过本地完整性校验；必须修正 errors 指出的缺失，并把修正写进 actions，不要只修改 feedback 文案。
 - 不要输出 id，后端会生成。
 

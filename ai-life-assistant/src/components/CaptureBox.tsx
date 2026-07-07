@@ -242,6 +242,7 @@ function supportsStreamingUpload() {
 
 export function CaptureBox({
   onSubmit,
+  timezone,
   conversationTarget,
   onClearConversationTarget
 }: {
@@ -252,6 +253,7 @@ export function CaptureBox({
     metadata?: SubmitMetadata
   ) => ParseFeedback | Promise<ParseFeedback>;
   feedback?: ParseFeedback;
+  timezone?: string;
   conversationTarget?: AssistantItemRef;
   onClearConversationTarget?: () => void;
 }) {
@@ -424,8 +426,10 @@ export function CaptureBox({
   async function transcribeAudio(blob: Blob): Promise<TranscriptionResult> {
     const formData = new FormData();
     formData.append("audio", blob, "voice-input.wav");
+    if (timezone) formData.append("timezone", timezone);
     const response = await fetch("/api/ai/asr", {
       method: "POST",
+      headers: timezone ? { "X-Assistant-Timezone": timezone } : undefined,
       body: formData
     });
     const payload = (await response.json()) as {
@@ -462,7 +466,8 @@ export function CaptureBox({
         headers: {
           "Content-Type": "application/octet-stream",
           "X-Audio-Format": "pcm",
-          "X-Audio-Sample-Rate": "16000"
+          "X-Audio-Sample-Rate": "16000",
+          ...(timezone ? { "X-Assistant-Timezone": timezone } : {})
         },
         body: stream,
         duplex: "half"

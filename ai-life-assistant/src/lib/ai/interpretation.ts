@@ -50,7 +50,7 @@ export type InterpretAction =
       type: "add_check_in";
       title: string;
       question: string;
-      relatedType?: "task" | "shopping_item" | "life_event" | "project";
+      relatedType: "task" | "shopping_item" | "life_event" | "project";
       relatedRef?: string;
       relatedId?: string;
       askAt?: string;
@@ -89,7 +89,7 @@ const energyLevels: EnergyLevel[] = ["low", "medium", "high"];
 const priorities: Priority[] = ["low", "medium", "high"];
 const shoppingStatuses: ShoppingItem["status"][] = ["needed", "ordered", "bought", "removed"];
 const lifeEventCategories: LifeEvent["category"][] = ["travel", "class", "appointment", "household", "outing", "other"];
-const checkInRelatedTypes: NonNullable<Extract<InterpretAction, { type: "add_check_in" }>["relatedType"]>[] = [
+const checkInRelatedTypes: Extract<InterpretAction, { type: "add_check_in" }>["relatedType"][] = [
   "task",
   "shopping_item",
   "life_event",
@@ -314,12 +314,12 @@ function parseAction(value: unknown, index = 0, key = "actions"): ParseResult<In
   if (type === "add_check_in") {
     const title = requiredStringField(value, "title", path, errors);
     const question = requiredStringField(value, "question", path, errors);
-    const relatedType = optionalEnumField(value, "relatedType", checkInRelatedTypes, path, errors);
+    const relatedType = requiredEnumField(value, "relatedType", checkInRelatedTypes, path, errors);
     const relatedRef = optionalStringField(value, "relatedRef", path, errors);
     const relatedId = optionalStringField(value, "relatedId", path, errors);
     const askAt = optionalStringField(value, "askAt", path, errors);
     const action =
-      title && question
+      title && question && relatedType
         ? {
             type,
             title,
@@ -445,6 +445,10 @@ export function validateAiInterpretationSchema(value: unknown) {
   return parseAiInterpretation(value).errors;
 }
 
+/**
+ * @deprecated This returns the parsed value even when errors were reported.
+ * Use parseAiInterpretation() and inspect errors before saving model output.
+ */
 export function normalizeAiInterpretation(value: unknown): AiInterpretation | null {
   return parseAiInterpretation(value).value;
 }

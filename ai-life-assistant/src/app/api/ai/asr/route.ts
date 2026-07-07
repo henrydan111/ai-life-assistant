@@ -22,7 +22,8 @@ export async function POST(request: Request) {
     const rawTranscript = await transcribeWithAgentPlan(Buffer.from(await file.arrayBuffer()), file.type || "audio/webm");
     const repair = await repairTranscriptWithAgentPlan({
       rawTranscript,
-      model: request.headers.get("X-Agent-Model") ?? undefined
+      model: request.headers.get("X-Agent-Model") ?? undefined,
+      timezone: request.headers.get("X-Assistant-Timezone") ?? formData.get("timezone")?.toString()
     });
     return NextResponse.json({
       transcript: repair.transcript,

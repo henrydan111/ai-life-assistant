@@ -10,6 +10,7 @@ const jiti = require("../node_modules/.pnpm/jiti@1.21.7/node_modules/jiti")(__fi
 
 const { applyInterpretation } = jiti("../src/lib/ai/applyInterpretation.ts");
 const { parseAiInterpretation, validateAiInterpretationSchema } = jiti("../src/lib/ai/interpretation.ts");
+const { validateCoverage, validateFinalInterpretation } = jiti("../src/lib/ai/agentPlan/validators.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
@@ -132,6 +133,18 @@ const evals = [
     }
   },
   {
+    name: "local fallback treats no-op input as no state change",
+    run() {
+      const result = parseLocalInput("谢谢！", createState(), "text").state;
+
+      assert.equal(result.tasks.length, 0);
+      assert.equal(result.lifeEvents.length, 0);
+      assert.equal(result.shoppingItems.length, 0);
+      assert.equal(result.checkIns.length, 0);
+      assert.equal(result.inputs.length, 1);
+    }
+  },
+  {
     name: "local fallback keeps repeated milk requests idempotent",
     run() {
       const first = parseLocalInput("买牛奶", createState(), "text").state;
@@ -143,15 +156,30 @@ const evals = [
     }
   },
   {
-    name: "local fallback keeps repeated Suzhou trips idempotent",
+    name: "local fallback keeps repeated Suzhou trips idempotent with split prep check-ins",
     run() {
       const first = parseLocalInput("周五去苏州", createState(), "text").state;
       const second = parseLocalInput("周五去苏州", first, "text").state;
 
       const suzhouEvents = second.lifeEvents.filter((event) => /苏州/.test(event.title) && event.status !== "cancelled");
       assert.equal(suzhouEvents.length, 1);
-      assert.equal(activeTasks(second, /苏州.*行李|行李.*苏州/).length, 1);
-      assert.equal(activeCheckIns(second, /苏州|行李|票/).filter((checkIn) => checkIn.relatedType === "life_event").length, 1);
+      assert.equal(activeTasks(second, /苏州.*行李|行李.*苏州/).length, 0);
+      assert.equal(activeCheckIns(second, /票/).filter((checkIn) => checkIn.relatedType === "life_event").length, 1);
+      assert.equal(activeCheckIns(second, /行李/).filter((checkIn) => checkIn.relatedType === "life_event").length, 1);
+      assert.equal(activeCheckIns(second, /票.*行李|行李.*票/).length, 0);
+    }
+  },
+  {
+    name: "local fallback does not invent travel dates",
+    run() {
+      const result = parseLocalInput("我要去苏州", createState(), "text");
+      const suzhouEvents = result.state.lifeEvents.filter((event) => /苏州/.test(event.title) && event.status !== "cancelled");
+
+      assert.equal(suzhouEvents.length, 1);
+      assert.equal(suzhouEvents[0].startsAt, undefined);
+      assert.equal(activeTasks(result.state, /苏州/).length, 0);
+      assert.equal(activeCheckIns(result.state, /哪天|when/i).filter((checkIn) => checkIn.relatedType === "life_event").length, 1);
+      assert.match(result.feedback.question, /哪天/);
     }
   },
   {
@@ -200,6 +228,77 @@ const evals = [
       assert.match(errors, /actions\[1\]\.status/);
       assert.match(errors, /memoryWrites\[0\]\.confidence/);
       assert.match(errors, /memoryWrites\[0\]\.requiresConfirmation/);
+    }
+  },
+  {
+    name: "AI interpretation allows zero-action no-op outputs",
+    run() {
+      const raw = {
+        feedback: { title: "没有更改", detail: "这次没有保存或修改任何事项。" },
+        actions: [],
+        memoryWrites: []
+      };
+
+      const parsed = parseAiInterpretation(raw);
+      assert.equal(parsed.value.actions.length, 0);
+      assert.equal(parsed.value.memoryWrites.length, 0);
+      assert.deepEqual(validateAiInterpretationSchema(raw), []);
+      assert.deepEqual(
+        validateCoverage(
+          "谢谢",
+          {
+            coverage: "complete",
+            missingIntents: [],
+            revisedActions: [],
+            memoryCandidates: [],
+            proactiveCheckins: []
+          },
+          { coverage: "complete", missing_intents: [], revised_actions: [] }
+        ),
+        []
+      );
+    }
+  },
+  {
+    name: "AI final validation rejects unresolved check-in related refs",
+    run() {
+      const raw = {
+        feedback: { title: "已整理", detail: "已整理提醒。" },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认车票",
+            question: "车票订好了吗？",
+            relatedType: "life_event",
+            relatedRef: "missing_trip"
+          }
+        ],
+        memoryWrites: []
+      };
+
+      const parsed = parseAiInterpretation(raw);
+      assert.equal(parsed.errors.length, 0);
+      const errors = validateFinalInterpretation("提醒我确认车票", parsed.value, raw).join(" ");
+      assert.match(errors, /relatedRef="missing_trip"/);
+    }
+  },
+  {
+    name: "AI check-ins must declare a related type",
+    run() {
+      const raw = {
+        feedback: { title: "已整理", detail: "已整理提醒。" },
+        actions: [
+          {
+            type: "add_check_in",
+            title: "确认车票",
+            question: "车票订好了吗？",
+            relatedRef: "trip"
+          }
+        ],
+        memoryWrites: []
+      };
+
+      assert.match(validateAiInterpretationSchema(raw).join(" "), /actions\[0\]\.relatedType/);
     }
   }
 ];

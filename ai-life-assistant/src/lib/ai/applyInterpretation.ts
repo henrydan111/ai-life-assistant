@@ -366,8 +366,9 @@ export function applyInterpretation(
     }
 
     if (action.type === "add_check_in") {
-      const relatedType = action.relatedType ?? "project";
-      const relatedId = action.relatedId ?? (action.relatedRef ? refs[action.relatedRef] : undefined) ?? "assistant";
+      const relatedType = action.relatedType;
+      const relatedId = action.relatedId ?? (action.relatedRef ? refs[action.relatedRef] : undefined) ?? (relatedType === "project" ? "assistant" : undefined);
+      if (!relatedId) return;
       if (findSimilarCheckIn(next.checkIns, action.title, action.question, relatedType, relatedId)) {
         return;
       }

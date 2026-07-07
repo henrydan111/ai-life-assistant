@@ -27,7 +27,8 @@ export async function POST(request: Request) {
     const rawTranscript = await transcribePcmStreamWithAgentPlan(requestBodyChunks(request.body));
     const repair = await repairTranscriptWithAgentPlan({
       rawTranscript,
-      model: request.headers.get("X-Agent-Model") ?? undefined
+      model: request.headers.get("X-Agent-Model") ?? undefined,
+      timezone: request.headers.get("X-Assistant-Timezone") ?? undefined
     });
     return NextResponse.json({
       transcript: repair.transcript,

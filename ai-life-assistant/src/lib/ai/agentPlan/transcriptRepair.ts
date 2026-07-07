@@ -97,10 +97,12 @@ function validateTranscriptRepair(rawTranscript: string, repair: TranscriptRepai
 
 export async function repairTranscriptWithAgentPlan({
   rawTranscript,
-  model
+  model,
+  timezone
 }: {
   rawTranscript: string;
   model?: string;
+  timezone?: string;
 }): Promise<TranscriptRepair> {
   if (!canUseAgentPlan()) {
     throw new Error("Agent Plan transcript repair runtime is not configured.");
@@ -118,13 +120,15 @@ export async function repairTranscriptWithAgentPlan({
     };
   }
 
+  const repairTimezone = timezone || runtimeTimezone();
+
   return requestValidatedAgentPlanJson({
     model: resolveAgentPlanLanguageModel(model),
     systemPrompt: TRANSCRIPT_REPAIR_PROMPT,
     payload: {
       now: new Date().toISOString(),
-      localNow: localNowText(runtimeTimezone()),
-      timezone: runtimeTimezone(),
+      localNow: localNowText(repairTimezone),
+      timezone: repairTimezone,
       rawTranscript: trimmed
     },
     temperature: 0,
