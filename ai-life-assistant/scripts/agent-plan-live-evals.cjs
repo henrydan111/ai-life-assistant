@@ -848,7 +848,18 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
         progress.push({ ...update, atMs: Math.round(performance.now() - started) });
       }
     });
-    const applied = applyInterpretation(planningText, step.inputType ?? "text", planningState, interpretation);
+    const applied = applyInterpretation(
+      planningText,
+      step.inputType ?? "text",
+      planningState,
+      interpretation,
+      confirmation
+        ? {
+            inputId: confirmation.sourceInputId,
+            appendInput: false
+          }
+        : undefined
+    );
     if (confirmation) {
       applied.feedback = mergeFeedback(confirmation.feedback, applied.feedback);
     }

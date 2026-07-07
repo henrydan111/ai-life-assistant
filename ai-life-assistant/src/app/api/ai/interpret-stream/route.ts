@@ -99,6 +99,12 @@ export async function POST(request: Request) {
 
         const planningText = confirmation?.unhandledText ?? rawText;
         const planningState = confirmation?.state ?? state;
+        const planningInputOptions = confirmation
+          ? {
+              inputId: confirmation.sourceInputId,
+              appendInput: false
+            }
+          : undefined;
 
         if (!canUseAgentPlan()) {
           sendProgress({
@@ -107,7 +113,7 @@ export async function POST(request: Request) {
             title: "先帮你记下",
             detail: "AI 深度整理暂时不可用，我会用本地方式先保存。"
           });
-          const result = parseLocalInput(planningText, planningState, inputType);
+          const result = parseLocalInput(planningText, planningState, inputType, planningInputOptions);
           const feedback = confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback;
           sendProgress({
             stage: "saving",
@@ -146,7 +152,8 @@ export async function POST(request: Request) {
         });
         const result = applyInterpretation(planningText, inputType, planningState, interpretation, {
           originalText,
-          transcriptRepair
+          transcriptRepair,
+          ...planningInputOptions
         });
         const feedback = confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback;
         sendProgress({

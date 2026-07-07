@@ -11,6 +11,7 @@ export type PendingConfirmationResolution = {
   state: AssistantState;
   feedback: ParseFeedback;
   unhandledText?: string;
+  sourceInputId: string;
 };
 
 const timeQuestionPattern = /(时间|哪天|什么时候|几点|日期|开始|出行)/;
@@ -19,7 +20,7 @@ const routineTargetTimeQuestionPattern = /(12点|十二点|中午|午夜|半夜|
 const routineTextPattern = /(睡觉|睡|上床|入睡|休息|作息|早睡)/;
 const newIntentConnectorPattern = /(另外|还有|顺便|然后|并且|同时|再帮我|再提醒我)/;
 const newIntentCuePattern =
-  /\b(buy|get|pick up|order|call|email|text|schedule|book|remind|prepare|finish)\b|买|采购|下单|提醒|帮我|打电话|联系|安排|预约|预订|订|准备|带|发|写|完成|处理|去|见|请假/;
+  /\b(buy|get|pick up|order|call|email|text|schedule|book|remind|prepare|finish)\b|买|采购|下单|提醒|帮我|打电话|联系|安排|预约|预订|订|准备|带|发|写|完成|处理|去|见|请假|没了|没有了|用完了|缺|不够/;
 const nonConfirmationObjectCuePattern = /(药|方案|项目|妈妈|爸爸|朋友|客户|老板|会议|电话|牛奶|伞|票|餐厅|饭店|文件|邮件)/;
 
 function normalize(text: string) {
@@ -38,7 +39,7 @@ function appendInput(
   inputType: "text" | "voice",
   feedback: ParseFeedback,
   options: ResolveOptions
-) {
+): { state: AssistantState; inputId: string } {
   const now = nowIso();
   const input: RawInput = {
     id: createId("input"),
@@ -58,8 +59,11 @@ function appendInput(
   };
 
   return {
-    ...state,
-    inputs: [input, ...state.inputs].slice(0, 60)
+    state: {
+      ...state,
+      inputs: [input, ...state.inputs].slice(0, 60)
+    },
+    inputId: input.id
   };
 }
 
@@ -81,7 +85,7 @@ function mentionedEvent(rawText: string, event: AssistantState["lifeEvents"][num
 
 function textSegments(rawText: string) {
   return rawText
-    .split(/然后|另外|还有|并且|，|。|；|,|;|\n/)
+    .split(/然后|另外|还有|顺便|并且|同时|再帮我|再提醒我|，|。|；|,|;|\n/)
     .map((segment) => segment.trim())
     .filter(Boolean);
 }
@@ -104,9 +108,11 @@ function canAutoBindSingleCandidate(rawText: string, candidateCount: number) {
   return candidateCount === 1 && isLikelyStandaloneConfirmationAnswer(rawText);
 }
 
-function eventTimeFromRawText(rawText: string, event: AssistantState["lifeEvents"][number], onlyCandidate: boolean) {
-  const segment = textSegments(rawText).find((item) => mentionedEvent(item, event));
-  return parseDueDate(segment ?? (onlyCandidate ? rawText : ""));
+function eventTimeSegment(rawText: string, event: AssistantState["lifeEvents"][number], allowStandaloneAnswer: boolean) {
+  return textSegments(rawText).find((segment) => {
+    if (!parseDueDate(segment)) return false;
+    return mentionedEvent(segment, event) || canAutoBindSingleCandidate(segment, allowStandaloneAnswer ? 1 : 2);
+  });
 }
 
 function mentionedRoutine(rawText: string, goal: AssistantState["routineGoals"][number]) {
@@ -134,8 +140,9 @@ function resolveLifeEventTime(rawText: string, state: AssistantState) {
   const matched = candidates
     .map((checkIn) => {
       const event = state.lifeEvents.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
-      if (!event || (!mentionedEvent(rawText, event) && !onlyPendingCheckIn)) return undefined;
-      const startsAt = eventTimeFromRawText(rawText, event, onlyPendingCheckIn);
+      if (!event) return undefined;
+      const segment = eventTimeSegment(rawText, event, onlyPendingCheckIn);
+      const startsAt = segment ? parseDueDate(segment) : undefined;
       return startsAt ? { checkIn, event, startsAt } : undefined;
     })
     .filter((item): item is { checkIn: AssistantCheckIn; event: AssistantState["lifeEvents"][number]; startsAt: string } =>
@@ -390,7 +397,6 @@ function segmentWasResolvedConfirmation(segment: string, before: AssistantState,
 }
 
 function unresolvedIntentText(rawText: string, before: AssistantState, after: AssistantState) {
-  if (!newIntentConnectorPattern.test(rawText)) return undefined;
   const unresolved = textSegments(rawText).filter((segment) => {
     if (segmentWasResolvedConfirmation(segment, before, after)) return false;
     return newIntentCuePattern.test(segment);
@@ -422,9 +428,11 @@ export function resolvePendingConfirmations(
     detail: Array.from(new Set(details)).join(" ")
   };
 
+  const appended = appendInput(next, rawText, inputType, feedback, options);
   return {
-    state: appendInput(next, rawText, inputType, feedback, options),
+    state: appended.state,
     feedback,
-    unhandledText: unresolvedIntentText(rawText, before, next)
+    unhandledText: unresolvedIntentText(rawText, before, next),
+    sourceInputId: appended.inputId
   };
 }

@@ -17,7 +17,12 @@ type ParseResult = {
   feedback: ParseFeedback;
 };
 
-const shoppingVerbs = /\b(buy|get|pick up|order)\b|买|采购|下单/;
+type ParseOptions = {
+  inputId?: string;
+  appendInput?: boolean;
+};
+
+const shoppingVerbs = /\b(buy|get|pick up|order)\b|买|采购|下单|没了|没有了|用完了|缺|不够/;
 const tiredWords = /\b(tired|exhausted|low energy|overwhelmed)\b|累|疲惫|没睡好|低能量|压力大/;
 const doneWords = /\b(done|finished|completed|bought|ordered)\b|完成了|做完了|搞定了|买好了|已买|下单了|已经下单/;
 const travelWords = /\b(go to|travel to|trip to|visit)\b|去|出差|出游|旅行/;
@@ -247,24 +252,27 @@ function isNoOpInput(text: string) {
   return noOpWords.test(normalized) || normalized.split(/\s+/).every((token) => noOpTokens.test(token));
 }
 
-export function parseLocalInput(rawText: string, state: AssistantState, inputType: "text" | "voice"): ParseResult {
+export function parseLocalInput(rawText: string, state: AssistantState, inputType: "text" | "voice", options: ParseOptions = {}): ParseResult {
   const text = rawText.trim();
   const lower = normalize(text);
   const now = nowIso();
-  const inputId = createId("input");
-  let next: AssistantState = {
-    ...state,
-    inputs: [
-      {
-        id: inputId,
-        rawText: text,
-        inputType,
-        parsedSummary: "Saved",
-        createdAt: now
-      },
-      ...state.inputs
-    ].slice(0, 60)
-  };
+  const inputId = options.inputId ?? createId("input");
+  let next: AssistantState =
+    options.appendInput === false
+      ? state
+      : {
+          ...state,
+          inputs: [
+            {
+              id: inputId,
+              rawText: text,
+              inputType,
+              parsedSummary: "Saved",
+              createdAt: now
+            },
+            ...state.inputs
+          ].slice(0, 60)
+        };
 
   if (!text) {
     return {

@@ -348,8 +348,53 @@ const evals = [
       assert.equal(confirmation.state.routineGoals[0].targetTime, "00:00");
       assert.equal(confirmation.state.checkIns[0].status, "answered");
 
-      const parsed = parseLocalInput(confirmation.unhandledText ?? "", confirmation.state, "text").state;
+      const parsed = parseLocalInput(confirmation.unhandledText ?? "", confirmation.state, "text", {
+        inputId: confirmation.sourceInputId,
+        appendInput: false
+      }).state;
       assert.equal(parsed.shoppingItems.some((item) => item.itemName === "牛奶"), true);
+      assert.equal(parsed.inputs.length, 1);
+      assert.equal(parsed.inputs[0].rawText, "晚上12点，另外明天买牛奶");
+      assert.equal(parsed.shoppingItems.find((item) => item.itemName === "牛奶").sourceInputId, undefined);
+      assert.equal(activeTasks(parsed, /买牛奶/)[0].sourceInputId, confirmation.sourceInputId);
+    }
+  },
+  {
+    name: "pending confirmation resolver splits connector without punctuation",
+    run() {
+      const state = createState({
+        routineGoals: [
+          {
+            id: "routine_sleep",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近",
+            priority: "medium",
+            status: "active",
+            confidence: 0.9,
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const confirmation = resolvePendingConfirmations("晚上12点顺便明天买牛奶", "text", state);
+      assert.ok(confirmation);
+      assert.equal(confirmation.state.routineGoals[0].targetTime, "00:00");
+      assert.match(confirmation.unhandledText ?? "", /买牛奶/);
     }
   },
   {
@@ -453,6 +498,94 @@ const evals = [
       assert.equal(goal.targetTime, "00:00");
       assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_trip_time").status, "pending");
       assert.equal(result.state.checkIns.find((checkIn) => checkIn.id === "check_sleep_time").status, "answered");
+    }
+  },
+  {
+    name: "pending confirmation resolver does not bind unrelated life event time sentence",
+    run() {
+      const state = createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const confirmation = resolvePendingConfirmations("明天下午2点买牛奶", "text", state);
+      assert.equal(confirmation, null);
+
+      const parsed = parseLocalInput("明天下午2点买牛奶", state, "text").state;
+      assert.equal(parsed.lifeEvents.find((item) => item.id === "event_shanghai").startsAt, undefined);
+      assert.equal(parsed.shoppingItems.some((item) => item.itemName === "牛奶"), true);
+    }
+  },
+  {
+    name: "pending confirmation resolver binds standalone life event time answer",
+    run() {
+      const state = createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const confirmation = resolvePendingConfirmations("周日下午2点", "text", state);
+      assert.ok(confirmation);
+      const event = confirmation.state.lifeEvents.find((item) => item.id === "event_shanghai");
+
+      assert.ok(event.startsAt);
+      assert.equal(new Intl.DateTimeFormat("en-US", { timeZone: "Asia/Shanghai", hour: "2-digit", hour12: false }).format(new Date(event.startsAt)), "14");
+      assert.equal(confirmation.state.checkIns[0].status, "answered");
+    }
+  },
+  {
+    name: "local fallback treats depleted known item as shopping need",
+    run() {
+      const result = parseLocalInput("牛奶没了", createState(), "text").state;
+
+      assert.equal(result.shoppingItems.some((item) => item.itemName === "牛奶"), true);
+      assert.equal(activeTasks(result, /买牛奶/).length, 1);
     }
   },
   {

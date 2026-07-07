@@ -333,6 +333,57 @@ const scenarios = [
     ]
   },
   {
+    id: "pending_life_event_time_ignores_unrelated_intent",
+    title: "网站流：行程时间追问不误吞无关购物时间",
+    state: () =>
+      createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: "2026-01-01T08:00:00.000Z",
+            updatedAt: "2026-01-01T08:00:00.000Z"
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "你这周末计划去上海，请问具体出行开始时间是什么时候？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: "2026-01-01T08:00:00.000Z",
+            status: "pending",
+            createdAt: "2026-01-01T08:00:00.000Z"
+          }
+        ]
+      }),
+    minScoreRatio: 1,
+    steps: [
+      {
+        rawText: "明天下午2点买牛奶",
+        expectations: [
+          expect("上海行程不能被误回填到明天下午 2 点", 4, ({ after }) => {
+            const event = plannedEvents(after, /上海/)[0];
+            if (!event) return "缺少上海 life_event";
+            return !event.startsAt || `startsAt=${event.startsAt}`;
+          }),
+          expect("买牛奶作为新购物需求被保存", 4, ({ after }) => {
+            return after.shoppingItems.some((item) => /牛奶/.test(item.itemName)) || "缺少牛奶购物项";
+          }),
+          expect("dashboard 仍保留上海出行时间追问", 2, ({ dashboard }) => {
+            return /具体出行开始时间|确认出行时间/.test(dashboard.visibleText) || dashboard.visibleText;
+          })
+        ]
+      }
+    ]
+  },
+  {
     id: "routine_sleep_goal",
     title: "网站流：最近每天半夜 12 点前睡觉",
     state: () => createState(),

@@ -12,6 +12,8 @@ export type InterpretResult = {
 export type ApplyInterpretationOptions = {
   originalText?: string;
   transcriptRepair?: TranscriptRepair;
+  inputId?: string;
+  appendInput?: boolean;
 };
 
 function normalize(text: string) {
@@ -358,30 +360,33 @@ export function applyInterpretation(
   options: ApplyInterpretationOptions = {}
 ): InterpretResult {
   const now = nowIso();
-  const inputId = createId("input");
+  const inputId = options.inputId ?? createId("input");
   const refs: Record<string, string> = {};
-  let next: AssistantState = {
-    ...state,
-    inputs: [
-      {
-        id: inputId,
-        rawText,
-        originalText: options.originalText && options.originalText !== rawText ? options.originalText : undefined,
-        transcriptRepair: options.transcriptRepair
-          ? {
-              confidence: options.transcriptRepair.confidence,
-              needsUserConfirmation: options.transcriptRepair.needsUserConfirmation,
-              question: options.transcriptRepair.question,
-              repairs: options.transcriptRepair.repairs
-            }
-          : undefined,
-        inputType,
-        parsedSummary: interpretation.feedback.title,
-        createdAt: now
-      },
-      ...state.inputs
-    ].slice(0, 60)
-  };
+  let next: AssistantState =
+    options.appendInput === false
+      ? state
+      : {
+          ...state,
+          inputs: [
+            {
+              id: inputId,
+              rawText,
+              originalText: options.originalText && options.originalText !== rawText ? options.originalText : undefined,
+              transcriptRepair: options.transcriptRepair
+                ? {
+                    confidence: options.transcriptRepair.confidence,
+                    needsUserConfirmation: options.transcriptRepair.needsUserConfirmation,
+                    question: options.transcriptRepair.question,
+                    repairs: options.transcriptRepair.repairs
+                  }
+                : undefined,
+              inputType,
+              parsedSummary: interpretation.feedback.title,
+              createdAt: now
+            },
+            ...state.inputs
+          ].slice(0, 60)
+        };
 
   interpretation.actions.forEach((action) => {
     if (action.type === "add_task") {

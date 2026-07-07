@@ -56,9 +56,15 @@ export async function POST(request: Request) {
 
   const planningText = confirmation?.unhandledText ?? body.rawText;
   const planningState = confirmation?.state ?? body.state;
+  const planningInputOptions = confirmation
+    ? {
+        inputId: confirmation.sourceInputId,
+        appendInput: false
+      }
+    : undefined;
 
   if (!canUseAgentPlan()) {
-    const result = parseLocalInput(planningText, planningState, inputType);
+    const result = parseLocalInput(planningText, planningState, inputType, planningInputOptions);
     return NextResponse.json({
       ...result,
       feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
@@ -75,7 +81,8 @@ export async function POST(request: Request) {
     });
     const result = applyInterpretation(planningText, inputType, planningState, interpretation, {
       originalText: body.originalText,
-      transcriptRepair: body.transcriptRepair
+      transcriptRepair: body.transcriptRepair,
+      ...planningInputOptions
     });
     return NextResponse.json({
       ...result,
