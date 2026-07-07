@@ -103,6 +103,81 @@ function collectTextCandidates(value: unknown, candidates: string[] = []) {
   return candidates;
 }
 
+function directText(record: Record<string, unknown>) {
+  const directKeys = ["text", "transcript", "result_text", "display_text"];
+  for (const key of directKeys) {
+    const item = record[key];
+    if (typeof item === "string" && item.trim()) return item.trim();
+  }
+  return undefined;
+}
+
+function utteranceStart(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return 0;
+  const record = value as Record<string, unknown>;
+  for (const key of ["start_time", "startTime", "start", "begin_time", "beginTime", "begin", "start_ms", "startMs"]) {
+    const item = record[key];
+    if (typeof item === "number" && Number.isFinite(item)) return item;
+  }
+  return 0;
+}
+
+function utteranceText(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return directText(record) ?? (typeof record.utterance === "string" ? record.utterance.trim() : undefined);
+}
+
+function joinedUtterances(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    const utterances = value
+      .map((item) => ({ text: utteranceText(item), start: utteranceStart(item) }))
+      .filter((item): item is { text: string; start: number } => Boolean(item.text));
+    return utterances.length > 1
+      ? utterances
+          .sort((left, right) => left.start - right.start)
+          .map((item) => item.text)
+          .join("")
+      : undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  for (const key of ["utterances", "sentences", "segments"]) {
+    const joined = joinedUtterances(record[key]);
+    if (joined) return joined;
+  }
+
+  for (const nested of ["result", "payload", "data", "message"]) {
+    const joined = joinedUtterances(record[nested]);
+    if (joined) return joined;
+  }
+
+  return undefined;
+}
+
+function preferredAsrTranscript(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const found = preferredAsrTranscript(value[index]);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  const record = value as Record<string, unknown>;
+  const direct = directText(record);
+  if (direct) return direct;
+
+  for (const nested of ["result", "payload", "data", "message"]) {
+    const found = preferredAsrTranscript(record[nested]);
+    if (found) return found;
+  }
+
+  return joinedUtterances(record);
+}
+
 function collapseRepeatedChineseSpans(text: string) {
   let next = text;
   for (let pass = 0; pass < 4; pass += 1) {
@@ -121,10 +196,7 @@ function cleanAsrTranscript(text: string) {
 
   result = result
     .replace(/\s+/g, "")
-    .replace(/[。！？!?；;，,、]+/g, "")
-    .replace(/晚晚饭/g, "晚饭")
-    .replace(/早早饭/g, "早饭")
-    .replace(/午午饭/g, "午饭");
+    .replace(/[。！？!?；;，,、]+/g, "");
 
   result = collapseRepeatedChineseSpans(result)
     .replace(/然后/g, "，然后")
@@ -578,18 +650,29 @@ function envBoolean(name: string, fallback: boolean) {
 }
 
 async function readFinalAsrTranscript(messages: ReturnType<typeof createMessageQueue>, responses: unknown[]) {
+  const finalResponses: unknown[] = [];
   while (true) {
     const response = parseAsrResponse(await messages.next(45000));
     if (response.payloadMessage) responses.push(response.payloadMessage);
     if (response.code !== 0) throw new Error(asrErrorMessage(response));
-    if (response.isLastPackage || response.payloadSequence < 0) break;
+    if (response.isLastPackage || response.payloadSequence < 0) {
+      if (response.payloadMessage) finalResponses.push(response.payloadMessage);
+      break;
+    }
   }
 
-  const transcript = responses
+  const preferred = [...finalResponses, ...responses]
+    .reverse()
+    .map(preferredAsrTranscript)
+    .filter((item): item is string => Boolean(item))
+    .map(cleanAsrTranscript)
+    .find(Boolean);
+  const fallback = responses
     .flatMap((response) => collectTextCandidates(response))
     .map(cleanAsrTranscript)
     .filter((item): item is string => Boolean(item))
     .sort((left, right) => right.length - left.length)[0];
+  const transcript = preferred ?? fallback;
   if (!transcript) {
     throw new Error("Agent Plan ASR returned no transcript. Please try a clearer or longer recording.");
   }

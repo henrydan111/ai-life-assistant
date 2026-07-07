@@ -1,11 +1,17 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
 import { createId } from "@/lib/id";
+import { applyMemoryWrites } from "@/lib/memory/applyMemoryWrites";
 import { nowIso } from "@/lib/time/parseTime";
-import type { AssistantCheckIn, AssistantState, ParseFeedback, RecurrenceCandidate, ShoppingItem, Task } from "@/types/domain";
+import type { AssistantCheckIn, AssistantState, ParseFeedback, RecurrenceCandidate, ShoppingItem, Task, TranscriptRepair } from "@/types/domain";
 
 export type InterpretResult = {
   state: AssistantState;
   feedback: ParseFeedback;
+};
+
+export type ApplyInterpretationOptions = {
+  originalText?: string;
+  transcriptRepair?: TranscriptRepair;
 };
 
 function normalize(text: string) {
@@ -91,7 +97,7 @@ function createTaskFromAction(action: Extract<InterpretAction, { type: "add_task
     dueAt: action.dueAt,
     estimatedMinutes: action.estimatedMinutes,
     energyRequired: action.energyRequired ?? "medium",
-    priority: action.priority ?? (action.dueAt ? "high" : "medium"),
+    priority: action.priority ?? "medium",
     status: "todo",
     sourceInputId,
     confidence: 0.82,
@@ -192,7 +198,8 @@ export function applyInterpretation(
   rawText: string,
   inputType: "text" | "voice",
   state: AssistantState,
-  interpretation: AiInterpretation
+  interpretation: AiInterpretation,
+  options: ApplyInterpretationOptions = {}
 ): InterpretResult {
   const now = nowIso();
   const inputId = createId("input");
@@ -203,6 +210,15 @@ export function applyInterpretation(
       {
         id: inputId,
         rawText,
+        originalText: options.originalText && options.originalText !== rawText ? options.originalText : undefined,
+        transcriptRepair: options.transcriptRepair
+          ? {
+              confidence: options.transcriptRepair.confidence,
+              needsUserConfirmation: options.transcriptRepair.needsUserConfirmation,
+              question: options.transcriptRepair.question,
+              repairs: options.transcriptRepair.repairs
+            }
+          : undefined,
         inputType,
         parsedSummary: interpretation.feedback.title,
         createdAt: now
@@ -248,6 +264,7 @@ export function applyInterpretation(
         startsAt: action.startsAt,
         endsAt: action.endsAt,
         location: action.location,
+        priority: action.priority ?? "medium",
         participants: action.participants ?? [],
         status: "planned" as const,
         sourceInputId: inputId,
@@ -295,6 +312,8 @@ export function applyInterpretation(
       };
     }
   });
+
+  next = applyMemoryWrites(next, interpretation.memoryWrites, inputId);
 
   return {
     state: next,

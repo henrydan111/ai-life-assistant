@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { repairTranscriptWithAgentPlan } from "@/lib/ai/agentPlan";
 import { transcribePcmStreamWithAgentPlan } from "@/lib/ai/speechPlan";
 
 export const runtime = "nodejs";
@@ -23,17 +24,23 @@ export async function POST(request: Request) {
 
   try {
     const startedAt = Date.now();
-    const transcript = await transcribePcmStreamWithAgentPlan(requestBodyChunks(request.body));
+    const rawTranscript = await transcribePcmStreamWithAgentPlan(requestBodyChunks(request.body));
+    const repair = await repairTranscriptWithAgentPlan({
+      rawTranscript,
+      model: request.headers.get("X-Agent-Model") ?? undefined
+    });
     return NextResponse.json({
-      transcript,
-      provider: "volcengine_agent_plan_asr_stream",
+      transcript: repair.transcript,
+      rawTranscript,
+      repair,
+      provider: "volcengine_agent_plan_asr_stream_with_repair",
       durationMs: Date.now() - startedAt
     });
   } catch (error) {
     return NextResponse.json(
       {
         error: error instanceof Error ? error.message : "Streaming ASR request failed.",
-        provider: "volcengine_agent_plan_asr_stream"
+        provider: "volcengine_agent_plan_asr_stream_with_repair"
       },
       { status: 502 }
     );

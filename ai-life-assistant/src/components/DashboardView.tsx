@@ -1,15 +1,40 @@
 "use client";
 
 import { useId, useState } from "react";
-import { CalendarDays, ChevronRight, Clock, ListChecks, Monitor } from "lucide-react";
+import { Brain, CalendarDays, ChevronRight, CircleHelp, Clock, ListChecks, Monitor } from "lucide-react";
 import { CalendarView } from "@/components/CalendarView";
 import { ItemActionButtons } from "@/components/ItemActionButtons";
-import type { AssistantItemRef, AssistantState, DashboardData } from "@/types/domain";
+import { MemoryList } from "@/components/MemoryList";
+import type { AssistantItemRef, AssistantState, DashboardData, Priority } from "@/types/domain";
 import { formatShortDate, formatTime, isSameLocalDay } from "@/lib/time/parseTime";
+
+const priorityLabels: Record<Priority, string> = {
+  high: "高优先级",
+  medium: "中优先级",
+  low: "低优先级"
+};
 
 function dayLabel(iso: string) {
   const date = new Date(iso);
   return isSameLocalDay(date, new Date()) ? "今天" : formatShortDate(iso);
+}
+
+function priorityLabel(priority: Priority) {
+  return priorityLabels[priority];
+}
+
+function checkInIsDue(askAt: string) {
+  return new Date(askAt).getTime() <= Date.now();
+}
+
+function visibleRelatedReminders(
+  state: AssistantState,
+  relatedType: "task" | "life_event" | "shopping_item",
+  relatedId: string
+) {
+  return state.checkIns
+    .filter((checkIn) => checkIn.status !== "dismissed" && checkIn.relatedType === relatedType && checkIn.relatedId === relatedId)
+    .sort((left, right) => new Date(left.askAt).getTime() - new Date(right.askAt).getTime());
 }
 
 export function DashboardView({
@@ -19,6 +44,10 @@ export function DashboardView({
   onCompleteItem,
   onDeleteItem,
   onDiscussItem,
+  onRevertItem,
+  onConfirmMemory,
+  onForgetMemory,
+  onUpdateMemorySummary,
   onToggleDisplay
 }: {
   dashboard: DashboardData;
@@ -27,6 +56,10 @@ export function DashboardView({
   onCompleteItem: (target: AssistantItemRef) => void;
   onDeleteItem: (target: AssistantItemRef) => void;
   onDiscussItem: (target: AssistantItemRef) => void;
+  onRevertItem: (target: AssistantItemRef) => void;
+  onConfirmMemory: (memoryId: string) => void;
+  onForgetMemory: (memoryId: string) => void;
+  onUpdateMemorySummary: (memoryId: string, summary: string) => void;
   onToggleDisplay?: () => void;
 }) {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
@@ -34,11 +67,22 @@ export function DashboardView({
   const progressCount = dashboard.progress.total > 0 ? `${dashboard.progress.completed}/${dashboard.progress.total}` : "无事项";
   const titleId = useId();
   const progressId = useId();
+  const suggestedMemories = (state?.memoryItems ?? []).filter((memory) => memory.status === "suggested").slice(0, 3);
+  const suggestedMemoryIds = new Set(suggestedMemories.map((memory) => memory.id));
+  const openConfirmations = (state?.checkIns ?? [])
+    .filter(
+      (checkIn) =>
+        checkIn.status === "pending" &&
+        checkIn.relatedType !== "task" &&
+        checkInIsDue(checkIn.askAt) &&
+        !suggestedMemoryIds.has(checkIn.relatedId)
+    )
+    .sort((left, right) => new Date(left.askAt).getTime() - new Date(right.askAt).getTime())
+    .slice(0, Math.max(0, 3 - suggestedMemories.length));
+  const remembered = (state?.memoryItems ?? []).filter((memory) => memory.status === "active").slice(0, 4);
 
   function remindersForTask(taskId: string) {
-    return (state?.checkIns ?? [])
-      .filter((checkIn) => checkIn.status === "pending" && checkIn.relatedType === "task" && checkIn.relatedId === taskId)
-      .sort((left, right) => new Date(left.askAt).getTime() - new Date(right.askAt).getTime());
+    return state ? visibleRelatedReminders(state, "task", taskId) : [];
   }
 
   function toggleItem(key: string) {
@@ -115,7 +159,7 @@ export function DashboardView({
                       <div className="item-title">{task.title}</div>
                       <div className="item-meta">
                         {task.due ? `${task.due} · ` : ""}
-                        {task.priority} priority
+                        {priorityLabel(task.priority)}
                         {reminders.length ? ` · ${reminders.length}个提醒` : ""}
                       </div>
                     </div>
@@ -131,7 +175,10 @@ export function DashboardView({
                   {reminders.length && isExpanded ? (
                     <ul className="related-reminders task-related-reminders" aria-label={`${task.title}的提醒`}>
                       {reminders.map((reminder) => (
-                        <li className="related-reminder" key={reminder.id}>
+                        <li
+                          className={reminder.status === "answered" ? "related-reminder completed" : "related-reminder"}
+                          key={reminder.id}
+                        >
                           <Clock size={13} aria-hidden="true" />
                           <div className="related-reminder-main">
                             <span>{reminder.title}</span>
@@ -139,6 +186,7 @@ export function DashboardView({
                               {dayLabel(reminder.askAt)}
                               {" · "}
                               {formatTime(reminder.askAt)}
+                              {reminder.status === "answered" ? " · 已完成" : ""}
                             </small>
                             <p>{reminder.question}</p>
                           </div>
@@ -148,6 +196,10 @@ export function DashboardView({
                             onComplete={onCompleteItem}
                             onDelete={onDeleteItem}
                             onDiscuss={onDiscussItem}
+                            onRevert={onRevertItem}
+                            showComplete={reminder.status !== "answered"}
+                            showRevert={reminder.status === "answered"}
+                            showDiscuss={false}
                           />
                         </li>
                       ))}
@@ -167,6 +219,70 @@ export function DashboardView({
         </ul>
       </section>
 
+      {suggestedMemories.length || openConfirmations.length ? (
+        <section className="dashboard-section memory-dashboard-section" aria-label="Needs confirmation">
+          <div className="dashboard-section-head">
+            <div className="dashboard-section-label">
+              <CircleHelp size={17} aria-hidden="true" />
+              <span>需要你确认</span>
+            </div>
+          </div>
+          {suggestedMemories.length ? (
+            <MemoryList
+              memories={suggestedMemories}
+              compact
+              emptyText=""
+              onConfirmMemory={onConfirmMemory}
+              onForgetMemory={onForgetMemory}
+              onUpdateMemorySummary={onUpdateMemorySummary}
+            />
+          ) : null}
+          {openConfirmations.length ? (
+            <ul className="memory-list compact">
+              {openConfirmations.map((checkIn) => (
+                <li className="memory-item" key={checkIn.id}>
+                  <div className="memory-main">
+                    <p>{checkIn.question}</p>
+                    <small>
+                      {dayLabel(checkIn.askAt)}
+                      {" · "}
+                      {formatTime(checkIn.askAt)}
+                    </small>
+                  </div>
+                  <ItemActionButtons
+                    className="hide-in-display compact-actions"
+                    target={{ id: checkIn.id, title: checkIn.question, kind: "check_in" }}
+                    onComplete={onCompleteItem}
+                    onDelete={onDeleteItem}
+                    onDiscuss={onDiscussItem}
+                    showDiscuss={false}
+                  />
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
+
+      {remembered.length ? (
+        <section className="dashboard-section memory-dashboard-section" aria-label="Remembered by AI">
+          <div className="dashboard-section-head">
+            <div className="dashboard-section-label">
+              <Brain size={17} aria-hidden="true" />
+              <span>AI 记住了</span>
+            </div>
+          </div>
+          <MemoryList
+            memories={remembered}
+            compact
+            emptyText="还没有长期记忆。"
+            onConfirmMemory={onConfirmMemory}
+            onForgetMemory={onForgetMemory}
+            onUpdateMemorySummary={onUpdateMemorySummary}
+          />
+        </section>
+      ) : null}
+
       <section className="dashboard-section schedule-summary-section" aria-label="Upcoming schedule">
         <div className="dashboard-section-head">
           <div className="dashboard-section-label">
@@ -178,9 +294,11 @@ export function DashboardView({
           <CalendarView
             state={state}
             compact
+            hiddenTaskIds={dashboard.today.map((task) => task.id)}
             onCompleteItem={onCompleteItem}
             onDeleteItem={onDeleteItem}
             onDiscussItem={onDiscussItem}
+            onRevertItem={onRevertItem}
           />
         ) : (
           <p className="state-line">后续 3 天、7 天和 1 个月的安排会显示在这里。</p>

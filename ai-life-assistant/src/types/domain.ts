@@ -57,6 +57,7 @@ export type LifeEvent = {
   startsAt?: string;
   endsAt?: string;
   location?: string;
+  priority: Priority;
   participants: string[];
   status: "planned" | "confirmed" | "done" | "cancelled";
   sourceInputId?: string;
@@ -86,10 +87,69 @@ export type RecurrenceCandidate = {
   status: "watching" | "suggested" | "accepted" | "rejected";
 };
 
+export type MemoryItem = {
+  id: string;
+  type:
+    | "household"
+    | "preference"
+    | "recurring_pattern"
+    | "travel_habit"
+    | "weather_preference"
+    | "assistant_behavior"
+    | "open_loop";
+  summary: string;
+  tags: string[];
+  entities: string[];
+  confidence: number;
+  status: "active" | "suggested" | "rejected" | "archived";
+  sensitivity: "low" | "medium" | "high";
+  evidence: Array<{
+    text: string;
+    inputId?: string;
+    createdAt: string;
+  }>;
+  lastUsedAt?: string;
+  useCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type MemoryWrite = {
+  type: MemoryItem["type"];
+  summary: string;
+  tags?: string[];
+  entities?: string[];
+  confidence: number;
+  sensitivity?: MemoryItem["sensitivity"];
+  requiresConfirmation?: boolean;
+  evidence: string;
+};
+
+export type MemoryContext = {
+  stableFacts: string[];
+  activePatterns: string[];
+  openLoops: string[];
+  assistantPreferences: string[];
+};
+
+export type TranscriptRepair = {
+  rawTranscript: string;
+  transcript: string;
+  confidence: number;
+  needsUserConfirmation: boolean;
+  question?: string;
+  repairs: Array<{
+    from?: string;
+    to?: string;
+    reason: string;
+  }>;
+};
+
 export type UserPreferences = {
   displayName: string;
   preferredLanguage: "en" | "zh";
   languageModel?: string;
+  modelChoiceVersion?: number;
   wakeTime: string;
   sleepTime: string;
   planningStyle: "light" | "balanced" | "ambitious";
@@ -99,6 +159,8 @@ export type UserPreferences = {
 export type RawInput = {
   id: string;
   rawText: string;
+  originalText?: string;
+  transcriptRepair?: Omit<TranscriptRepair, "rawTranscript" | "transcript">;
   inputType: "text" | "voice";
   parsedSummary: string;
   createdAt: string;
@@ -114,6 +176,7 @@ export type AssistantState = {
   lifeEvents: LifeEvent[];
   checkIns: AssistantCheckIn[];
   recurrenceCandidates: RecurrenceCandidate[];
+  memoryItems: MemoryItem[];
   inputs: RawInput[];
 };
 
@@ -155,6 +218,24 @@ export type ParseFeedback = {
   title: string;
   detail: string;
   question?: string;
+};
+
+export type AiProcessingStage =
+  | "speech"
+  | "transcript_repair"
+  | "understanding"
+  | "coverage"
+  | "planning"
+  | "saving"
+  | "done";
+
+export type AiProcessingStatus = "waiting" | "active" | "complete" | "attention" | "error";
+
+export type AiProcessingUpdate = {
+  stage: AiProcessingStage;
+  status: AiProcessingStatus;
+  title: string;
+  detail?: string;
 };
 
 export type AssistantItemRef = {

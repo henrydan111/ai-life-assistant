@@ -44,6 +44,10 @@ export function DashboardPageClient({ initialDisplayMode = false }: { initialDis
         onCompleteItem={store.completeItem}
         onDeleteItem={store.deleteItem}
         onDiscussItem={updateFromPrompt}
+        onRevertItem={store.reopenItem}
+        onConfirmMemory={store.confirmMemory}
+        onForgetMemory={store.forgetMemory}
+        onUpdateMemorySummary={store.updateMemorySummary}
       />
     </AppShell>
   );

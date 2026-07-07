@@ -1,8 +1,15 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { Mic, Send, Square, X } from "lucide-react";
-import type { AssistantItemRef, ParseFeedback } from "@/types/domain";
+import { Check, Keyboard, Mic, Send, Square, X } from "lucide-react";
+import type {
+  AiProcessingStage,
+  AiProcessingStatus,
+  AiProcessingUpdate,
+  AssistantItemRef,
+  ParseFeedback,
+  TranscriptRepair
+} from "@/types/domain";
 
 type SpeechRecognitionLike = {
   lang: string;
@@ -31,6 +38,120 @@ type ChatMessage = {
   body: string;
   detail?: string;
 };
+
+type SubmitMetadata = {
+  originalText?: string;
+  transcriptRepair?: TranscriptRepair;
+};
+
+type TranscriptionResult = {
+  transcript: string;
+  rawTranscript?: string;
+  repair?: TranscriptRepair;
+};
+
+type ProcessingFlowState = {
+  inputType: "text" | "voice";
+  updates: Partial<Record<AiProcessingStage, AiProcessingUpdate>>;
+  latest?: AiProcessingUpdate;
+};
+
+const processingStepLabels: Record<AiProcessingStage, string> = {
+  speech: "语音转文字",
+  transcript_repair: "转写校准",
+  understanding: "理解原文",
+  coverage: "检查遗漏",
+  planning: "整理事项",
+  saving: "保存总览",
+  done: "完成"
+};
+
+const processingStageOrder: AiProcessingStage[] = ["understanding", "coverage", "planning", "saving"];
+const voiceProcessingStageOrder: AiProcessingStage[] = ["speech", "transcript_repair", ...processingStageOrder];
+
+function initialProcessingFlow(inputType: "text" | "voice"): ProcessingFlowState {
+  const updates: Partial<Record<AiProcessingStage, AiProcessingUpdate>> = {};
+  if (inputType === "voice") {
+    updates.speech = {
+      stage: "speech",
+      status: "complete",
+      title: "语音转文字",
+      detail: "已完成语音识别。"
+    };
+    updates.transcript_repair = {
+      stage: "transcript_repair",
+      status: "complete",
+      title: "转写校准",
+      detail: "已生成正式文本。"
+    };
+  }
+  updates.understanding = {
+    stage: "understanding",
+    status: "active",
+    title: "理解原文",
+    detail: "正在拆解你说到的每件事。"
+  };
+  return {
+    inputType,
+    updates,
+    latest: updates.understanding
+  };
+}
+
+function initialVoiceTranscriptionFlow(): ProcessingFlowState {
+  const speechUpdate: AiProcessingUpdate = {
+    stage: "speech",
+    status: "active",
+    title: "语音转文字",
+    detail: "正在收尾并生成原始转写。"
+  };
+  return {
+    inputType: "voice",
+    updates: {
+      speech: speechUpdate,
+      transcript_repair: {
+        stage: "transcript_repair",
+        status: "waiting",
+        title: "转写校准",
+        detail: "等待原始转写。"
+      }
+    },
+    latest: speechUpdate
+  };
+}
+
+function flowStages(inputType: "text" | "voice") {
+  return inputType === "voice" ? voiceProcessingStageOrder : processingStageOrder;
+}
+
+function ProcessingFlow({ flow }: { flow: ProcessingFlowState }) {
+  const stages = flowStages(flow.inputType);
+  const latest = flow.latest;
+
+  return (
+    <div className="processing-flow" role="status" aria-live="polite">
+      <div className="processing-flow-head">
+        <span>正在整理你的安排</span>
+        <small>{latest?.status === "complete" && latest.stage === "done" ? "已完成" : "实时处理中"}</small>
+      </div>
+      <ol className="processing-steps" aria-label="AI 处理进度">
+        {stages.map((stage) => {
+          const update = flow.updates[stage];
+          const status: AiProcessingStatus = update?.status ?? "waiting";
+          return (
+            <li className={`processing-step ${status}`} key={stage}>
+              <span className="processing-node" aria-hidden="true">
+                {status === "complete" ? <Check size={12} /> : status === "attention" ? "!" : null}
+              </span>
+              <span>{processingStepLabels[stage]}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <p>{latest?.detail ?? "我会逐步检查、整理并保存。"}</p>
+    </div>
+  );
+}
 
 function mergeAudioChunks(chunks: Float32Array[]) {
   const length = chunks.reduce((total, chunk) => total + chunk.length, 0);
@@ -124,7 +245,12 @@ export function CaptureBox({
   conversationTarget,
   onClearConversationTarget
 }: {
-  onSubmit: (text: string, inputType?: "text" | "voice") => ParseFeedback | Promise<ParseFeedback>;
+  onSubmit: (
+    text: string,
+    inputType?: "text" | "voice",
+    onProgress?: (update: AiProcessingUpdate) => void,
+    metadata?: SubmitMetadata
+  ) => ParseFeedback | Promise<ParseFeedback>;
   feedback?: ParseFeedback;
   conversationTarget?: AssistantItemRef;
   onClearConversationTarget?: () => void;
@@ -135,16 +261,22 @@ export function CaptureBox({
   const [speechBusy, setSpeechBusy] = useState(false);
   const [speechStatus, setSpeechStatus] = useState<string | undefined>();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [processingFlow, setProcessingFlow] = useState<ProcessingFlowState | undefined>();
+  const [inputMode, setInputMode] = useState<"voice" | "text">("voice");
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const silentGainRef = useRef<GainNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Float32Array[]>([]);
+  const recordingStartedAtRef = useRef<number | undefined>(undefined);
+  const chatThreadRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const streamControllerRef = useRef<ReadableStreamDefaultController<Uint8Array> | null>(null);
-  const streamingTranscriptRef = useRef<Promise<string | undefined> | null>(null);
+  const streamingTranscriptRef = useRef<Promise<TranscriptionResult | undefined> | null>(null);
   const streamingSupportedRef = useRef(false);
+  const flowClearTimerRef = useRef<number | undefined>(undefined);
+  const speechStatusTimerRef = useRef<number | undefined>(undefined);
   const [supportsSpeech, setSupportsSpeech] = useState(false);
   const [listening, setListening] = useState(false);
   const [recognition, setRecognition] = useState<SpeechRecognitionLike | null>(null);
@@ -171,24 +303,73 @@ export function CaptureBox({
         .map((result) => result[0].transcript)
         .join("");
       setText(transcript);
+      setInputMode("text");
     };
     instance.onend = () => setListening(false);
     setRecognition(instance);
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (flowClearTimerRef.current) window.clearTimeout(flowClearTimerRef.current);
+      if (speechStatusTimerRef.current) window.clearTimeout(speechStatusTimerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!conversationTarget) return;
     setText("");
+    setInputMode("text");
     setSpeechStatus(undefined);
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [conversationTarget]);
 
-  async function submit(inputType: "text" | "voice" = "text", overrideText = text) {
+  useEffect(() => {
+    if (inputMode !== "text") return;
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [inputMode]);
+
+  useEffect(() => {
+    const thread = chatThreadRef.current;
+    if (!thread) return;
+    thread.scrollTop = thread.scrollHeight;
+  }, [messages]);
+
+  function clearFlowLater(delay = 2600) {
+    if (flowClearTimerRef.current) window.clearTimeout(flowClearTimerRef.current);
+    flowClearTimerRef.current = window.setTimeout(() => setProcessingFlow(undefined), delay);
+  }
+
+  function updateProcessingFlow(update: AiProcessingUpdate) {
+    setProcessingFlow((current) => {
+      const next = current ?? initialProcessingFlow(update.stage === "speech" || update.stage === "transcript_repair" ? "voice" : "text");
+      const updates = {
+        ...next.updates,
+        [update.stage]: update
+      };
+      return {
+        ...next,
+        updates,
+        latest: update
+      };
+    });
+  }
+
+  function showSpeechStatus(message: string, delay = 2400) {
+    setSpeechStatus(message);
+    if (speechStatusTimerRef.current) window.clearTimeout(speechStatusTimerRef.current);
+    speechStatusTimerRef.current = window.setTimeout(() => setSpeechStatus(undefined), delay);
+  }
+
+  async function submit(inputType: "text" | "voice" = "text", overrideText = text, metadata?: SubmitMetadata) {
     const value = overrideText.trim();
     if (!value || submitting) return;
     const timestamp = Date.now();
     setSubmitting(true);
     setText("");
+    setInputMode("voice");
+    if (flowClearTimerRef.current) window.clearTimeout(flowClearTimerRef.current);
+    setProcessingFlow(initialProcessingFlow(inputType));
     setMessages((current) => [
       ...current,
       {
@@ -198,7 +379,13 @@ export function CaptureBox({
       }
     ]);
     try {
-      const result = await onSubmit(value, inputType);
+      const result = await onSubmit(value, inputType, updateProcessingFlow, metadata);
+      updateProcessingFlow({
+        stage: "done",
+        status: "complete",
+        title: "整理完成",
+        detail: result.detail
+      });
       const assistantBody = [result.title, result.detail, result.question].filter(Boolean).join("\n");
       setMessages((current) => [
         ...current,
@@ -209,10 +396,17 @@ export function CaptureBox({
           detail: result.question
         }
       ]);
+      clearFlowLater();
     } catch (error) {
       const errorText = error instanceof Error && error.message && !/failed to fetch/i.test(error.message)
         ? error.message
         : "AI 解析失败，未保存这次输入。请稍后重试。";
+      updateProcessingFlow({
+        stage: "saving",
+        status: "error",
+        title: "处理失败",
+        detail: errorText
+      });
       setMessages((current) => [
         ...current,
         {
@@ -221,23 +415,33 @@ export function CaptureBox({
           body: errorText
         }
       ]);
+      clearFlowLater(4200);
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function transcribeAudio(blob: Blob) {
+  async function transcribeAudio(blob: Blob): Promise<TranscriptionResult> {
     const formData = new FormData();
     formData.append("audio", blob, "voice-input.wav");
     const response = await fetch("/api/ai/asr", {
       method: "POST",
       body: formData
     });
-    const payload = (await response.json()) as { transcript?: string; error?: string };
+    const payload = (await response.json()) as {
+      transcript?: string;
+      rawTranscript?: string;
+      repair?: TranscriptRepair;
+      error?: string;
+    };
     if (!response.ok || !payload.transcript) {
       throw new Error(payload.error ?? "Speech recognition failed.");
     }
-    return payload.transcript;
+    return {
+      transcript: payload.transcript,
+      rawTranscript: payload.rawTranscript,
+      repair: payload.repair
+    };
   }
 
   function startStreamingTranscription() {
@@ -264,11 +468,20 @@ export function CaptureBox({
         duplex: "half"
       } as StreamingRequestInit)
         .then(async (response) => {
-          const payload = (await response.json()) as { transcript?: string; error?: string };
+          const payload = (await response.json()) as {
+            transcript?: string;
+            rawTranscript?: string;
+            repair?: TranscriptRepair;
+            error?: string;
+          };
           if (!response.ok || !payload.transcript) {
             throw new Error(payload.error ?? "Streaming speech recognition failed.");
           }
-          return payload.transcript;
+          return {
+            transcript: payload.transcript,
+            rawTranscript: payload.rawTranscript,
+            repair: payload.repair
+          };
         })
         .catch(() => {
           streamControllerRef.current = null;
@@ -313,8 +526,68 @@ export function CaptureBox({
     return transcribeAudio(wavBlob);
   }
 
+  function capturedEnoughAudio() {
+    const recordedMs = recordingStartedAtRef.current ? Date.now() - recordingStartedAtRef.current : 0;
+    const samples = audioChunksRef.current.reduce((total, chunk) => total + chunk.length, 0);
+    return recordedMs >= 700 && samples > 0;
+  }
+
+  function transcriptionScore(result: TranscriptionResult) {
+    const confidence = result.repair?.confidence ?? 0.55;
+    return confidence + (result.repair?.needsUserConfirmation ? 0 : 0.25);
+  }
+
+  function chooseTranscription(primary: TranscriptionResult | undefined, fallback: TranscriptionResult) {
+    if (!primary || !primary.transcript.trim()) return fallback;
+    return transcriptionScore(fallback) > transcriptionScore(primary) ? fallback : primary;
+  }
+
+  async function handleVoiceTranscription(result: TranscriptionResult) {
+    const transcript = result.transcript.trim();
+    if (!transcript) throw new Error("Speech recognition failed.");
+
+    updateProcessingFlow({
+      stage: "speech",
+      status: "complete",
+      title: "语音转文字",
+      detail: "已完成原始转写。"
+    });
+
+    const repairNeedsConfirmation = result.repair?.needsUserConfirmation;
+    updateProcessingFlow({
+      stage: "transcript_repair",
+      status: repairNeedsConfirmation ? "attention" : "complete",
+      title: "转写校准",
+      detail: repairNeedsConfirmation ? "有一处内容需要你确认。" : "已校准成正式文本。"
+    });
+
+    if (repairNeedsConfirmation) {
+      const timestamp = Date.now();
+      setText(transcript);
+      setInputMode("text");
+      setMessages((current) => [
+        ...current,
+        {
+          id: `assistant-transcript-${timestamp}`,
+          role: "assistant",
+          body: [
+            result.repair?.question ?? "我不太确定刚才的语音内容是否准确，请确认后再发送。",
+            "我先把候选内容放在输入框里，你可以直接发送，也可以改完再发送。"
+          ].join("\n")
+        }
+      ]);
+      return;
+    }
+
+    await submit("voice", transcript, {
+      originalText: result.rawTranscript,
+      transcriptRepair: result.repair
+    });
+  }
+
   async function startRecording() {
     setSpeechStatus(undefined);
+    if (speechStatusTimerRef.current) window.clearTimeout(speechStatusTimerRef.current);
     const win = window as unknown as AudioWindow;
     const AudioContextCtor = window.AudioContext ?? win.webkitAudioContext;
     if (!AudioContextCtor) throw new Error("Audio recording is unavailable in this browser.");
@@ -338,6 +611,7 @@ export function CaptureBox({
     audioProcessorRef.current = processor;
     silentGainRef.current = silentGain;
     audioChunksRef.current = [];
+    recordingStartedAtRef.current = Date.now();
     startStreamingTranscription();
 
     processor.onaudioprocess = (event) => {
@@ -358,9 +632,11 @@ export function CaptureBox({
 
     setRecording(false);
     setSpeechBusy(true);
+    if (flowClearTimerRef.current) window.clearTimeout(flowClearTimerRef.current);
 
     const audioContext = audioContextRef.current;
     const sampleRate = audioContext?.sampleRate ?? 48000;
+    const hasEnoughAudio = capturedEnoughAudio();
 
     audioProcessorRef.current?.disconnect();
     audioSourceRef.current?.disconnect();
@@ -372,17 +648,37 @@ export function CaptureBox({
 
     try {
       await audioContext?.close();
-      const streamingTranscript = streamingTranscriptRef.current ? await streamingTranscriptRef.current : undefined;
-      const transcript = streamingTranscript?.trim() || (await transcribeBufferedAudio(sampleRate));
-      setText(transcript);
-      await submit("voice", transcript);
+      if (!hasEnoughAudio) {
+        setProcessingFlow(undefined);
+        setSpeechStatus(undefined);
+        return;
+      }
+      setProcessingFlow(initialVoiceTranscriptionFlow());
+      const streamingResult = streamingTranscriptRef.current ? await streamingTranscriptRef.current : undefined;
+      let transcription = streamingResult?.transcript.trim() ? streamingResult : undefined;
+      if (!transcription || transcription.repair?.needsUserConfirmation) {
+        try {
+          transcription = chooseTranscription(transcription, await transcribeBufferedAudio(sampleRate));
+        } catch (fallbackError) {
+          if (!transcription) throw fallbackError;
+        }
+      }
+      if (!transcription) {
+        setProcessingFlow(undefined);
+        showSpeechStatus("没有听到有效内容。");
+        return;
+      }
+      await handleVoiceTranscription(transcription);
     } catch (error) {
-      setSpeechStatus(error instanceof Error ? error.message : "Speech recognition failed.");
+      setProcessingFlow(undefined);
+      const message = error instanceof Error ? error.message : "";
+      showSpeechStatus(/no transcript|no voice input|speech recognition/i.test(message) ? "没有听到有效内容。" : message || "语音识别失败，请再试一次。");
     } finally {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
       audioContextRef.current = null;
       audioChunksRef.current = [];
+      recordingStartedAtRef.current = undefined;
       streamingTranscriptRef.current = null;
       streamControllerRef.current = null;
       setSpeechBusy(false);
@@ -397,6 +693,7 @@ export function CaptureBox({
 
     if (supportsSpeech) {
       try {
+        setInputMode("voice");
         await startRecording();
         return;
       } catch (error) {
@@ -415,35 +712,29 @@ export function CaptureBox({
   }
 
   const voiceLabel = recording || listening ? "停止语音输入" : "开始语音输入";
-  const voiceState = recording || listening ? "正在实时识别" : speechBusy ? "正在收尾" : "点按开始说话";
+  const voiceState = recording || listening ? "正在听，点按结束" : speechBusy ? "正在收尾" : "点按开始说话";
   const hasChat = messages.length > 0;
+  const composerState = recording || listening ? "listening" : speechBusy ? "busy" : "";
+  const textPlaceholder = recording || listening
+    ? "正在听，你可以继续说..."
+    : speechBusy
+      ? "正在整理语音..."
+      : conversationTarget
+        ? "说出变化，例如：改到周五、标记完成、改成请假两天..."
+        : "先说出来，我来整理；也可以打字补充...";
 
   return (
     <section className={hasChat ? "voice-card capture-panel has-chat" : "voice-card capture-panel"} aria-labelledby={`${textareaId}-heading`} aria-busy={submitting || speechBusy}>
       <div className="voice-intro">
-        <p className="eyebrow">Voice first</p>
+        <p className="eyebrow">Capture</p>
         <h1 id={`${textareaId}-heading`} className="voice-title">
-          说出来就好
+          说或写，都可以
         </h1>
-        <p className="voice-subtitle">我会把它整理成待办、日程、问题或下一步</p>
-      </div>
-
-      <div className="voice-orb-wrap">
-        <button
-          className={recording || listening ? "voice-orb recording" : "voice-orb"}
-          type="button"
-          onClick={() => void toggleSpeech()}
-          disabled={speechBusy || submitting || (!supportsSpeech && !recognition)}
-          aria-label={voiceLabel}
-          aria-pressed={recording || listening}
-        >
-          {recording || listening ? <Square size={42} aria-hidden="true" /> : <Mic size={48} aria-hidden="true" />}
-        </button>
-        <p className="voice-state">{voiceState}</p>
+        <p className="voice-subtitle">我会把一句话整理成待办、日程、问题或下一步</p>
       </div>
 
       {messages.length > 0 ? (
-        <div className="chat-thread" role="log" aria-live="polite" aria-label="Conversation">
+        <div className="chat-thread" ref={chatThreadRef} role="log" aria-live="polite" aria-label="Conversation">
           {messages.map((message) => (
             <article className={message.role === "user" ? "chat-message user" : "chat-message assistant"} key={message.id}>
               <span className="chat-role">{message.role === "user" ? "你" : "助手"}</span>
@@ -453,13 +744,16 @@ export function CaptureBox({
         </div>
       ) : null}
 
-      <div className="voice-composer">
+      {processingFlow ? <ProcessingFlow flow={processingFlow} /> : null}
+
+      <div className={composerState ? `voice-composer ${composerState}` : "voice-composer"}>
         <label className="sr-only" htmlFor={textareaId}>
           Life input
         </label>
         <p id={textareaDescriptionId} className="sr-only">
           Add a task, event, shopping item, check-in, or note.
         </p>
+        {!conversationTarget ? <p className="voice-composer-hint">更适合直接说：提醒、计划、琐事都可以一口气讲完</p> : null}
         {conversationTarget ? (
           <div className="update-target" role="status">
             <div>
@@ -473,23 +767,55 @@ export function CaptureBox({
             ) : null}
           </div>
         ) : null}
-        <textarea
-          ref={textareaRef}
-          id={textareaId}
-          className="capture-textarea voice-textarea"
-          value={text}
-          placeholder={conversationTarget ? "说出变化，例如：改到周五、标记完成、改成请假两天..." : "也可以打字，例如：明天下午提醒我整理方案..."}
-          aria-describedby={textareaDescriptionId}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={(event) => {
-            if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit("text");
-          }}
-        />
-        <div className="voice-composer-actions">
-          <button className="text-button primary" type="button" onClick={() => void submit("text")} disabled={!text.trim() || submitting}>
-            <Send size={17} aria-hidden="true" />
-            {submitting ? "发送中" : "发送"}
+        <div className={inputMode === "text" ? "voice-composer-shell text-mode" : "voice-composer-shell voice-mode"}>
+          <button
+            className={inputMode === "text" ? "composer-keyboard-button active" : "composer-keyboard-button"}
+            type="button"
+            onClick={() => setInputMode((current) => (current === "text" ? "voice" : "text"))}
+            disabled={recording || listening || speechBusy || submitting}
+            aria-label={inputMode === "text" ? "切换回语音输入" : "切换到文字输入"}
+            aria-pressed={inputMode === "text"}
+            title={inputMode === "text" ? "切换回语音输入" : "切换到文字输入"}
+          >
+            <Keyboard size={17} aria-hidden="true" />
           </button>
+          {inputMode === "voice" ? (
+            <>
+              <button
+                className={recording || listening ? "composer-voice-main recording" : "composer-voice-main"}
+                type="button"
+                onClick={() => void toggleSpeech()}
+                disabled={speechBusy || submitting || (!supportsSpeech && !recognition)}
+                aria-label={voiceLabel}
+                aria-pressed={recording || listening}
+                title={voiceState}
+              >
+                {recording || listening ? <Square size={18} aria-hidden="true" /> : <Mic size={20} aria-hidden="true" />}
+                <span>{voiceState}</span>
+              </button>
+              <span className="composer-side-balance" aria-hidden="true" />
+            </>
+          ) : (
+            <>
+              <textarea
+                ref={textareaRef}
+                id={textareaId}
+                className="capture-textarea voice-textarea"
+                rows={1}
+                value={text}
+                placeholder={textPlaceholder}
+                aria-describedby={textareaDescriptionId}
+                onChange={(event) => setText(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") void submit("text");
+                }}
+              />
+              <button className="composer-send-button" type="button" onClick={() => void submit("text")} disabled={!text.trim() || submitting || recording || listening || speechBusy}>
+                <Send size={16} aria-hidden="true" />
+                <span>{submitting ? "发送中" : "发送"}</span>
+              </button>
+            </>
+          )}
         </div>
       </div>
       {speechStatus ? (

@@ -1,4 +1,4 @@
-import type { EnergyLevel, Horizon, LifeEvent, ParseFeedback, Priority, ShoppingItem, Task } from "@/types/domain";
+import type { EnergyLevel, Horizon, LifeEvent, MemoryWrite, ParseFeedback, Priority, ShoppingItem, Task } from "@/types/domain";
 
 export type InterpretAction =
   | {
@@ -43,6 +43,7 @@ export type InterpretAction =
       startsAt?: string;
       endsAt?: string;
       location?: string;
+      priority?: Priority;
       participants?: string[];
     }
   | {
@@ -64,6 +65,7 @@ export type InterpretAction =
 export type AiInterpretation = {
   feedback: ParseFeedback;
   actions: InterpretAction[];
+  memoryWrites: MemoryWrite[];
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -80,6 +82,10 @@ function optionalBoolean(value: unknown) {
 
 function optionalNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
 
 function parseAction(value: unknown): InterpretAction | null {
@@ -142,6 +148,7 @@ function parseAction(value: unknown): InterpretAction | null {
       startsAt: optionalString(value.startsAt),
       endsAt: optionalString(value.endsAt),
       location: optionalString(value.location),
+      priority: optionalString(value.priority) as Priority | undefined,
       participants: Array.isArray(value.participants) ? value.participants.filter((item): item is string => typeof item === "string") : []
     };
   }
@@ -175,6 +182,40 @@ function parseAction(value: unknown): InterpretAction | null {
   return null;
 }
 
+function parseMemoryWrite(value: unknown): MemoryWrite | null {
+  if (!isRecord(value)) return null;
+  const type = optionalString(value.type) as MemoryWrite["type"] | undefined;
+  const summary = optionalString(value.summary);
+  const confidence = optionalNumber(value.confidence);
+  const evidence = optionalString(value.evidence);
+
+  if (!type || !summary || confidence === undefined || !evidence) return null;
+  if (
+    ![
+      "household",
+      "preference",
+      "recurring_pattern",
+      "travel_habit",
+      "weather_preference",
+      "assistant_behavior",
+      "open_loop"
+    ].includes(type)
+  ) {
+    return null;
+  }
+
+  return {
+    type,
+    summary,
+    tags: stringArray(value.tags),
+    entities: stringArray(value.entities),
+    confidence,
+    sensitivity: optionalString(value.sensitivity) as MemoryWrite["sensitivity"] | undefined,
+    requiresConfirmation: optionalBoolean(value.requiresConfirmation ?? value.requires_confirmation),
+    evidence
+  };
+}
+
 export function normalizeAiInterpretation(value: unknown): AiInterpretation | null {
   if (!isRecord(value)) return null;
   const feedback = isRecord(value.feedback) ? value.feedback : {};
@@ -182,6 +223,12 @@ export function normalizeAiInterpretation(value: unknown): AiInterpretation | nu
   const detail = optionalString(feedback.detail);
   const actionSource = Array.isArray(value.actions) ? value.actions : Array.isArray(value.operations) ? value.operations : [];
   const actions = actionSource.map(parseAction).filter((action): action is InterpretAction => Boolean(action));
+  const memorySource = Array.isArray(value.memoryWrites)
+    ? value.memoryWrites
+    : Array.isArray(value.memory_writes)
+      ? value.memory_writes
+      : [];
+  const memoryWrites = memorySource.map(parseMemoryWrite).filter((item): item is MemoryWrite => Boolean(item));
 
   if (!title || !detail) return null;
 
@@ -191,6 +238,7 @@ export function normalizeAiInterpretation(value: unknown): AiInterpretation | nu
       detail,
       question: optionalString(feedback.question)
     },
-    actions
+    actions,
+    memoryWrites
   };
 }

@@ -16,8 +16,8 @@ export function InputPageClient() {
       <div className="mx-auto grid max-w-2xl gap-4">
         <CaptureBox
           feedback={feedback}
-          onSubmit={async (text, inputType) => {
-            const result = await store.submitInput(text, inputType);
+          onSubmit={async (text, inputType, onProgress, metadata) => {
+            const result = await store.submitInput(text, inputType, onProgress, metadata);
             setFeedback(result);
             return result;
           }}

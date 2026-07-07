@@ -12,6 +12,7 @@ type CalendarReminder = {
   question: string;
   target: AssistantItemRef;
   at: Date;
+  status: "pending" | "answered";
   meta?: string;
 };
 
@@ -80,7 +81,7 @@ function hasRelatedRecord(state: AssistantState, kind: string, id: string) {
   return false;
 }
 
-function buildCalendarItems(state: AssistantState) {
+function buildCalendarItems(state: AssistantState, hiddenTaskIds = new Set<string>()) {
   const items: CalendarItem[] = [];
   const parents = new Map<string, CalendarItem>();
 
@@ -90,6 +91,7 @@ function buildCalendarItems(state: AssistantState) {
   }
 
   for (const task of state.tasks) {
+    if (hiddenTaskIds.has(task.id)) continue;
     if (!task.dueAt || task.status === "done" || task.status === "cancelled") continue;
     addItem({
       id: task.id,
@@ -97,13 +99,12 @@ function buildCalendarItems(state: AssistantState) {
       kind: "task",
       target: { id: task.id, title: task.title, kind: "task" },
       at: new Date(task.dueAt),
-      meta: task.priority === "high" ? "高优先级" : undefined,
       reminders: []
     });
   }
 
   for (const event of state.lifeEvents) {
-    if (!event.startsAt || event.status === "cancelled") continue;
+    if (!event.startsAt || event.status === "done" || event.status === "cancelled") continue;
     addItem({
       id: event.id,
       title: event.title,
@@ -129,13 +130,14 @@ function buildCalendarItems(state: AssistantState) {
   }
 
   for (const checkIn of state.checkIns) {
-    if (checkIn.status !== "pending") continue;
+    if (checkIn.status === "dismissed") continue;
     const reminder: CalendarReminder = {
       id: checkIn.id,
       title: checkIn.title,
       question: checkIn.question,
       target: { id: checkIn.id, title: checkIn.question, kind: "check_in" },
       at: new Date(checkIn.askAt),
+      status: checkIn.status,
       meta: checkIn.relatedType
     };
     const parent = parents.get(parentKey(checkIn.relatedType, checkIn.relatedId));
@@ -143,6 +145,7 @@ function buildCalendarItems(state: AssistantState) {
       parent.reminders.push(reminder);
       continue;
     }
+    if (checkIn.status !== "pending") continue;
     if (hasRelatedRecord(state, checkIn.relatedType, checkIn.relatedId)) continue;
     addItem({
       id: checkIn.id,
@@ -162,19 +165,23 @@ function buildCalendarItems(state: AssistantState) {
 export function CalendarView({
   state,
   compact = false,
+  hiddenTaskIds,
   onCompleteItem,
   onDeleteItem,
-  onDiscussItem
+  onDiscussItem,
+  onRevertItem
 }: {
   state: AssistantState;
   compact?: boolean;
+  hiddenTaskIds?: string[];
   onCompleteItem: (target: AssistantItemRef) => void;
   onDeleteItem: (target: AssistantItemRef) => void;
   onDiscussItem: (target: AssistantItemRef) => void;
+  onRevertItem: (target: AssistantItemRef) => void;
 }) {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const today = startOfLocalDay(new Date());
-  const items = buildCalendarItems(state);
+  const items = buildCalendarItems(state, new Set(hiddenTaskIds ?? []));
   const titleId = useId();
 
   function toggleItem(key: string) {
@@ -245,8 +252,8 @@ export function CalendarView({
                               {formatTime(item.at.toISOString())}
                               {item.meta ? (
                                 <>
-                                  {" "}
-                                  <MapPin size={11} aria-hidden="true" />
+                                  {" · "}
+                                  {item.kind === "event" ? <MapPin size={11} aria-hidden="true" /> : null}
                                   {item.meta}
                                 </>
                               ) : null}
@@ -264,7 +271,10 @@ export function CalendarView({
                         {item.reminders.length && isExpanded ? (
                           <ul className="related-reminders horizon-related-reminders" aria-label={`${item.title}的提醒`}>
                             {item.reminders.map((reminder) => (
-                              <li className="related-reminder" key={reminder.id}>
+                              <li
+                                className={reminder.status === "answered" ? "related-reminder completed" : "related-reminder"}
+                                key={reminder.id}
+                              >
                                 <Clock size={13} aria-hidden="true" />
                                 <div className="related-reminder-main">
                                   <span>{reminder.title}</span>
@@ -272,6 +282,7 @@ export function CalendarView({
                                     {relativeDay(reminder.at, today)}
                                     {" · "}
                                     {formatTime(reminder.at.toISOString())}
+                                    {reminder.status === "answered" ? " · 已完成" : ""}
                                   </small>
                                   <p>{reminder.question}</p>
                                 </div>
@@ -281,6 +292,10 @@ export function CalendarView({
                                   onComplete={onCompleteItem}
                                   onDelete={onDeleteItem}
                                   onDiscuss={onDiscussItem}
+                                  onRevert={onRevertItem}
+                                  showComplete={reminder.status !== "answered"}
+                                  showRevert={reminder.status === "answered"}
+                                  showDiscuss={false}
                                 />
                               </li>
                             ))}

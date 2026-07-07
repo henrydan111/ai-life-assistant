@@ -2,10 +2,12 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw, Save } from "lucide-react";
-import type { AssistantItemRef, AssistantState } from "@/types/domain";
+import type { AssistantItemRef, AssistantState, ParseFeedback } from "@/types/domain";
 import { AppShell } from "@/components/AppShell";
 import { CaptureBox } from "@/components/CaptureBox";
 import { DashboardView } from "@/components/DashboardView";
+import { MemoryList } from "@/components/MemoryList";
+import { TrackerCard } from "@/components/TrackerCard";
 import { agentPlanLanguageModels, defaultAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { generateDashboard } from "@/lib/dashboard/generateDashboard";
 import { useAssistantStore } from "@/lib/store/localStore";
@@ -13,14 +15,23 @@ import { useAssistantStore } from "@/lib/store/localStore";
 function SettingsCard({
   state,
   onUpdatePreferences,
-  onReset
+  onReset,
+  onConfirmMemory,
+  onForgetMemory,
+  onUpdateMemorySummary
 }: {
   state: AssistantState;
   onUpdatePreferences: (preferences: AssistantState["preferences"]) => void;
   onReset: () => void;
+  onConfirmMemory: (memoryId: string) => void;
+  onForgetMemory: (memoryId: string) => void;
+  onUpdateMemorySummary: (memoryId: string, summary: string) => void;
 }) {
   const [draft, setDraft] = useState(state.preferences);
   const [saved, setSaved] = useState(false);
+  const selectedModel =
+    agentPlanLanguageModels.find((model) => model.id === (draft.languageModel ?? defaultAgentPlanLanguageModel)) ??
+    agentPlanLanguageModels.find((model) => model.id === defaultAgentPlanLanguageModel);
 
   useEffect(() => {
     setDraft(state.preferences);
@@ -77,9 +88,13 @@ function SettingsCard({
                 {agentPlanLanguageModels.map((model) => (
                   <option key={model.id} value={model.id}>
                     {model.label}
+                    {model.id === defaultAgentPlanLanguageModel ? "（推荐）" : ""}
                   </option>
                 ))}
               </select>
+              <p className="model-note">
+                {selectedModel?.description ?? "当前模型将用于理解、检查和整理你的输入。"} Thinking 已关闭。
+              </p>
             </div>
           </div>
         </section>
@@ -134,6 +149,17 @@ function SettingsCard({
             )}
           </ol>
         </section>
+
+        <section className="settings-section memory-settings-section" aria-label="Assistant memory">
+          <h3>AI 记住了</h3>
+          <MemoryList
+            memories={state.memoryItems.filter((memory) => memory.status === "active" || memory.status === "suggested").slice(0, 8)}
+            emptyText="还没有长期记忆。"
+            onConfirmMemory={onConfirmMemory}
+            onForgetMemory={onForgetMemory}
+            onUpdateMemorySummary={onUpdateMemorySummary}
+          />
+        </section>
       </div>
 
       <footer className="settings-actions">
@@ -166,22 +192,23 @@ export function HomeClient() {
   const [stageReady, setStageReady] = useState(false);
   const [conversationTarget, setConversationTarget] = useState<AssistantItemRef | undefined>();
   const dashboard = useMemo(() => generateDashboard(store.state), [store.state]);
-  const pageLabels = ["Dashboard", "输入", "设置"];
+  const voiceCardIndex = 2;
+  const pageLabels = ["统计", "Dashboard", "输入", "设置"];
 
   useLayoutEffect(() => {
     const rail = railRef.current;
-    const middleCard = cardRefs.current[1];
-    if (!rail || !middleCard) {
+    const voiceCard = cardRefs.current[voiceCardIndex];
+    if (!rail || !voiceCard) {
       setStageReady(true);
       return;
     }
     const previousScrollBehavior = rail.style.scrollBehavior;
     rail.style.scrollBehavior = "auto";
-    rail.scrollLeft = middleCard.offsetLeft - (rail.clientWidth - middleCard.clientWidth) / 2;
+    rail.scrollLeft = voiceCard.offsetLeft - (rail.clientWidth - voiceCard.clientWidth) / 2;
     rail.style.scrollBehavior = previousScrollBehavior;
-    setActiveCard(1);
+    setActiveCard(voiceCardIndex);
     setStageReady(true);
-  }, []);
+  }, [voiceCardIndex]);
 
   function updateActiveCard() {
     const rail = railRef.current;
@@ -211,7 +238,7 @@ export function HomeClient() {
 
   function startItemConversation(target: AssistantItemRef) {
     setConversationTarget(target);
-    goToCard(1);
+    goToCard(voiceCardIndex);
   }
 
   return (
@@ -219,10 +246,20 @@ export function HomeClient() {
       <section className={stageReady ? "ipad-stage stage-ready" : "ipad-stage stage-booting"} aria-label="Swipeable assistant cards">
         <div className="card-rail" ref={railRef} onScroll={updateActiveCard}>
           <article
+            className="swipe-card tracker-swipe-card"
+            aria-label="Tracker card"
+            ref={(node) => {
+              cardRefs.current[0] = node;
+            }}
+          >
+            <TrackerCard state={store.state} onDeleteItem={store.deleteItem} onRevertItem={store.reopenItem} />
+          </article>
+
+          <article
             className="swipe-card dashboard-swipe-card"
             aria-label="Dashboard card"
             ref={(node) => {
-              cardRefs.current[0] = node;
+              cardRefs.current[1] = node;
             }}
           >
             <DashboardView
@@ -231,6 +268,10 @@ export function HomeClient() {
               onCompleteItem={store.completeItem}
               onDeleteItem={store.deleteItem}
               onDiscussItem={startItemConversation}
+              onRevertItem={store.reopenItem}
+              onConfirmMemory={store.confirmMemory}
+              onForgetMemory={store.forgetMemory}
+              onUpdateMemorySummary={store.updateMemorySummary}
             />
           </article>
 
@@ -238,17 +279,17 @@ export function HomeClient() {
             className="swipe-card voice-swipe-card"
             aria-label="Voice card"
             ref={(node) => {
-              cardRefs.current[1] = node;
+              cardRefs.current[2] = node;
             }}
           >
             <CaptureBox
               conversationTarget={conversationTarget}
               onClearConversationTarget={() => setConversationTarget(undefined)}
-              onSubmit={async (text, inputType) => {
-                const result = conversationTarget
+              onSubmit={async (text, inputType, onProgress, metadata) => {
+                const result: ParseFeedback = conversationTarget
                   ? await store.updateItemByConversation(conversationTarget, text, inputType)
-                  : await store.submitInput(text, inputType);
-                if (conversationTarget) setConversationTarget(undefined);
+                  : await store.submitInput(text, inputType, onProgress, metadata);
+                if (conversationTarget && !result.question) setConversationTarget(undefined);
                 return result;
               }}
             />
@@ -258,10 +299,17 @@ export function HomeClient() {
             className="swipe-card settings-swipe-card"
             aria-label="Settings card"
             ref={(node) => {
-              cardRefs.current[2] = node;
+              cardRefs.current[3] = node;
             }}
           >
-            <SettingsCard state={store.state} onUpdatePreferences={store.updatePreferences} onReset={store.reset} />
+            <SettingsCard
+              state={store.state}
+              onUpdatePreferences={store.updatePreferences}
+              onReset={store.reset}
+              onConfirmMemory={store.confirmMemory}
+              onForgetMemory={store.forgetMemory}
+              onUpdateMemorySummary={store.updateMemorySummary}
+            />
           </article>
         </div>
         <nav className="swipe-dots" aria-label="页面位置">
