@@ -16,6 +16,7 @@ const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWi
 const { confirmationTraceMeta, withoutConfirmationTrace } = jiti("../src/lib/ai/agentPlan/debugTrace.ts");
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
+const { applyShoppingPolicy } = jiti("../src/lib/ai/productCompiler/policies/shoppingPolicy.ts");
 const { parseJsonObject } = jiti("../src/lib/ai/agentPlan/validatedJson.ts");
 const {
   applyInterpretResultIfFresh,
@@ -1460,6 +1461,30 @@ const evals = [
       assert.equal(result.trace.some((item) => item.rule === "temporal.repair.remove_unsupported_weekend_travel_check_in_time"), true);
       assert.equal(result.trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
       assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "ShoppingPolicy owns purchase task repair",
+    run() {
+      const rawText = "家里牛奶快没了，提醒我要买牛奶";
+      const trace = [];
+      const result = applyShoppingPolicy(rawText, {
+        feedback: { title: "已记录", detail: "已记录买牛奶。" },
+        actions: [
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed"
+          }
+        ],
+        memoryWrites: []
+      }, trace);
+      const shopping = result.actions.find((action) => action.type === "add_shopping_item" && /牛奶/.test(action.itemName));
+
+      assert.ok(shopping);
+      assert.equal(shopping.createTask, true);
+      assert.equal(trace.some((item) => item.rule === "shopping.repair.ensure_purchase_task"), true);
     }
   },
   {

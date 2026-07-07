@@ -4,6 +4,7 @@ import {
   isExplicitRecentSleepGoal,
   isRedundantRoutineScopeCheckIn
 } from "@/lib/ai/productCompiler/policies/routineGoalPolicy";
+import { applyShoppingPolicy, hasUnsafeShoppingReminderText } from "@/lib/ai/productCompiler/policies/shoppingPolicy";
 import type { AssistantCheckIn, AssistantState } from "@/types/domain";
 import { actionText } from "./actionText";
 import { actionRefs, ensureActionRef } from "./actionRefs";
@@ -82,11 +83,6 @@ function segmentMentioning(rawText: string, pattern: RegExp) {
   return rawText.split(/然后|另外|还有|并且|到时候|[，。,.!?！？；;]/).find((segment) => pattern.test(segment)) ?? rawText;
 }
 
-function hasExplicitReminderTimeOfDay(rawText: string, pattern: RegExp) {
-  const segment = segmentMentioning(rawText, pattern);
-  return /(今晚|明早|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：))/.test(segment);
-}
-
 function rawHasCoarseWeekendTravel(rawText: string) {
   if (!/(周末|本周末|这周末)/.test(rawText) || !/(去|出行|旅行|出差|计划)/.test(rawText)) return false;
   const segment = segmentMentioning(rawText, /周末|本周末|这周末|去|出行|旅行|出差|计划/);
@@ -97,77 +93,11 @@ function rawHasCoarseWeekendTravel(rawText: string) {
 
 type UnsafeFeedbackKind = "coarse_weekend_travel" | "milk_reminder" | "routine_goal_confirmation";
 
-const unsafeMilkReminderTimePattern =
-  /(明天\s*(?:中午|12\s*点|十二点|午饭前|午餐前)|(?:中午|12\s*点|十二点|午饭前|午餐前).*牛奶|牛奶.*(?:中午|12\s*点|十二点|午饭前|午餐前))/;
-
 const unsafeCoarseWeekendTravelTimePattern =
   /(202\d|20\d{2}|(?:\d{1,2}|[一二三四五六七八九十]{1,3})月(?:\d{1,2}|[一二三四五六七八九十]{1,3})[日号]|本?周日|星期日|周天|星期天|下午\s*(?:2|二|两)\s*点(?:半|三十)?|14\s*(?::|：|点)\s*(?:00|30|半)?|明天\s*(?:中午|12\s*点|十二点))/;
 
 const unsafeClarificationQuestionPattern =
   /(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|明天\s*(?:12\s*点|十二点|午饭前|午餐前)|周日下午2点|本?周日\s*14\s*点|下午\s*(?:2|二|两)\s*点|14\s*(?::|：|点)\s*(?:00|30|半)?)/;
-
-function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
-  if (!/牛奶/.test(rawText) || !/(买|需要|没有|没了|缺|快没了|提醒)/.test(rawText) || hasExplicitReminderTimeOfDay(rawText, /牛奶/)) {
-    return interpretation;
-  }
-
-  const actions = interpretation.actions.map((action) => {
-    if (action.type === "add_task" && /牛奶/.test(actionText(action)) && action.dueAt) {
-      const repaired = { ...action, dueAt: undefined };
-      trace.push({
-        rule: "temporal.repair.remove_unsupported_milk_due_at",
-        severity: "repair",
-        before: action,
-        after: repaired,
-        reason: "The user asked to remember buying milk but did not provide a reminder time."
-      });
-      return repaired;
-    }
-    if (action.type === "add_shopping_item" && /牛奶/.test(action.itemName) && action.dueAt) {
-      const repaired = { ...action, dueAt: undefined };
-      trace.push({
-        rule: "temporal.repair.remove_unsupported_milk_shopping_due_at",
-        severity: "repair",
-        before: action,
-        after: repaired,
-        reason: "The user asked to remember buying milk but did not provide a reminder time."
-      });
-      return repaired;
-    }
-    return action;
-  });
-
-  return { ...interpretation, actions };
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function ensureShoppingPurchaseTasks(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
-  const actions = interpretation.actions.map((action) => {
-    if (action.type !== "add_shopping_item" || action.createTask || (action.status && action.status !== "needed")) {
-      return action;
-    }
-    const segment = segmentMentioning(rawText, new RegExp(escapeRegExp(action.itemName)));
-    if (
-      !/(提醒|买|购买|采购|需要|没有|没了|缺|快没了|补货)/.test(segment) ||
-      /(不要|不用|别|取消|不需要|问|看看|确认|是否|要不要|需不需要|室友|别人|家人)/.test(segment)
-    ) {
-      return action;
-    }
-    const repaired = { ...action, createTask: true };
-    trace.push({
-      rule: "shopping.repair.ensure_purchase_task",
-      severity: "repair",
-      before: action,
-      after: repaired,
-      reason: "The user expressed a shopping purchase/reminder need, so the shopping item should also appear as an actionable task."
-    });
-    return repaired;
-  });
-  return { ...interpretation, actions };
-}
 
 function ensureCoarseWeekendTravelCheckIn(actions: InterpretAction[], eventRef: string, location: string) {
   const exists = actions.some(
@@ -232,10 +162,6 @@ function removeUnsupportedCoarseWeekendTravelTimes(rawText: string, interpretati
   return { ...interpretation, actions };
 }
 
-function hasUnsafeMilkReminderText(rawText: string, text: string) {
-  return /牛奶/.test(rawText) && !hasExplicitReminderTimeOfDay(rawText, /牛奶/) && unsafeMilkReminderTimePattern.test(text);
-}
-
 function hasUnsafeCoarseWeekendTravelText(rawText: string, text: string) {
   return rawHasCoarseWeekendTravel(rawText) && unsafeCoarseWeekendTravelTimePattern.test(text);
 }
@@ -243,7 +169,7 @@ function hasUnsafeCoarseWeekendTravelText(rawText: string, text: string) {
 function unsafeFeedbackKind(rawText: string, text?: string): UnsafeFeedbackKind | undefined {
   if (!text) return undefined;
   if (hasUnsafeCoarseWeekendTravelText(rawText, text)) return "coarse_weekend_travel";
-  if (hasUnsafeMilkReminderText(rawText, text)) return "milk_reminder";
+  if (hasUnsafeShoppingReminderText(rawText, text)) return "milk_reminder";
   if (
     isExplicitRecentSleepGoal(rawText) &&
     isRedundantRoutineScopeCheckIn({
@@ -372,8 +298,7 @@ export function postProcessAgentPlanInterpretationWithTrace(
   const trace: PlanTrace[] = [...(interpretation.planTrace ?? [])];
   let next = splitCombinedTravelPrepCheckIns(interpretation);
   next = applyRoutineGoalPolicy(rawText, next, trace);
-  next = removeUnsupportedMilkReminderTimes(rawText, next, trace);
-  next = ensureShoppingPurchaseTasks(rawText, next, trace);
+  next = applyShoppingPolicy(rawText, next, trace);
   next = removeUnsupportedCoarseWeekendTravelTimes(rawText, next, trace);
   next = ensureMentionedTravelDraft(rawText, next);
   next = ensureMentionedTravelPrepCheckIns(rawText, next);
