@@ -32,6 +32,17 @@ export function summarizeState(state: AssistantState) {
       priority: event.priority,
       status: event.status
     })),
+    routineGoals: state.routineGoals.slice(0, 12).map((goal) => ({
+      id: goal.id,
+      title: goal.title,
+      cadence: goal.cadence,
+      targetTime: goal.targetTime,
+      targetTimeRelation: goal.targetTimeRelation,
+      scope: goal.scope,
+      scopeLabel: goal.scopeLabel,
+      priority: goal.priority,
+      status: goal.status
+    })),
     checkIns: state.checkIns.slice(0, 12).map((checkIn) => ({
       id: checkIn.id,
       title: checkIn.title,

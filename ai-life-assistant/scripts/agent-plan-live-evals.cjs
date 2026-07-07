@@ -89,6 +89,7 @@ function createState(overrides = {}) {
     tasks: [],
     projects: [],
     shoppingItems: [],
+    routineGoals: [],
     moodLogs: [],
     lifeEvents: [],
     checkIns: [],
@@ -132,6 +133,7 @@ function memory(overrides) {
 function actionText(action) {
   if (action.type === "add_task") return [action.title, action.description].filter(Boolean).join(" ");
   if (action.type === "add_life_event") return [action.title, action.description, action.location].filter(Boolean).join(" ");
+  if (action.type === "add_routine_goal") return [action.title, action.description, action.cadence, action.targetTime, action.scopeLabel].filter(Boolean).join(" ");
   if (action.type === "add_check_in") return [action.title, action.question].join(" ");
   if (action.type === "add_shopping_item") return [action.itemName, action.quantity].filter(Boolean).join(" ");
   if (action.type === "update_shopping_status") return [action.itemName, action.status].filter(Boolean).join(" ");
@@ -148,6 +150,9 @@ function itemText(item) {
     item.location,
     item.itemName,
     item.summary,
+    item.cadence,
+    item.targetTime,
+    item.scopeLabel,
     item.status,
     item.dueAt,
     item.startsAt,
@@ -163,6 +168,10 @@ function activeTasks(state, pattern) {
 
 function activeCheckIns(state, pattern) {
   return state.checkIns.filter((checkIn) => checkIn.status === "pending" && pattern.test(itemText(checkIn)));
+}
+
+function activeRoutineGoals(state, pattern) {
+  return state.routineGoals.filter((goal) => goal.status !== "done" && goal.status !== "cancelled" && pattern.test(itemText(goal)));
 }
 
 function plannedEvents(state, pattern) {
@@ -195,6 +204,7 @@ function summarizeActions(actions) {
   return actions.map((action) => {
     if (action.type === "add_task") return `task:${action.title}${action.dueAt ? ` @ ${action.dueAt}` : ""}`;
     if (action.type === "add_life_event") return `event:${action.title}${action.startsAt ? ` @ ${action.startsAt}` : ""}`;
+    if (action.type === "add_routine_goal") return `routine:${action.title}:${action.cadence ?? "custom"}${action.targetTime ? ` @ ${action.targetTime}` : ""}`;
     if (action.type === "add_check_in") return `check:${action.relatedType}:${action.title} -> ${action.question}`;
     if (action.type === "add_shopping_item") return `shopping:${action.itemName}:${action.status ?? "needed"}`;
     if (action.type === "update_shopping_status") return `shopping_update:${action.itemName}:${action.status}`;
@@ -207,6 +217,15 @@ function summarizeState(state) {
   return {
     tasks: state.tasks.map((task) => ({ title: task.title, status: task.status, dueAt: task.dueAt })),
     lifeEvents: state.lifeEvents.map((event) => ({ title: event.title, location: event.location, startsAt: event.startsAt })),
+    routineGoals: state.routineGoals.map((goal) => ({
+      title: goal.title,
+      cadence: goal.cadence,
+      targetTime: goal.targetTime,
+      targetTimeRelation: goal.targetTimeRelation,
+      scope: goal.scope,
+      scopeLabel: goal.scopeLabel,
+      status: goal.status
+    })),
     shoppingItems: state.shoppingItems.map((item) => ({ itemName: item.itemName, status: item.status, expectedAt: item.expectedAt })),
     checkIns: state.checkIns.map((checkIn) => ({
       title: checkIn.title,
@@ -237,6 +256,53 @@ function normalizeCheckResult(result) {
 }
 
 const scenarios = [
+  {
+    id: "routine_sleep_goal",
+    title: "节奏目标：最近每天半夜 12 点前睡觉",
+    tags: ["smoke", "routine", "clarification"],
+    minScoreRatio: 1,
+    state: () => createState(),
+    steps: [
+      {
+        rawText: "我最近希望能够每天半夜12点前睡觉。",
+        expectations: [
+          expect("模型使用 routine goal 而不是一次性待办", 3, ({ interpretation, after }) => {
+            const hasRoutineAction = interpretation.actions.some((action) => action.type === "add_routine_goal" && /睡觉|睡|休息/.test(actionText(action)));
+            const goals = activeRoutineGoals(after, /睡觉|睡|休息/);
+            const sleepTasks = activeTasks(after, /睡觉|睡|休息/);
+            if (!hasRoutineAction) return `actions=${summarizeActions(interpretation.actions).join("; ")}`;
+            if (goals.length !== 1) return `routineGoals=${goals.length}`;
+            return sleepTasks.length === 0 || `不应创建一次性睡觉任务：${sleepTasks.map(itemText).join(" | ")}`;
+          }),
+          expect("承接每天和 0 点前语义", 3, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠节奏目标";
+            if (goal.cadence !== "daily") return `cadence=${goal.cadence}`;
+            if (goal.targetTime !== "00:00") return `targetTime=${goal.targetTime}`;
+            return goal.targetTimeRelation === "before" || `targetTimeRelation=${goal.targetTimeRelation}`;
+          }),
+          expect("最近语义变成可确认的范围", 2, ({ after, feedback }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠节奏目标";
+            if (goal.scope !== "recent" && !/最近/.test(goal.scopeLabel ?? "")) {
+              return `scope=${goal.scope}, scopeLabel=${goal.scopeLabel}`;
+            }
+            if (goal.scopeLabel && !/最近/.test(goal.scopeLabel)) {
+              return `前端范围标签应保留“最近”，当前 scopeLabel=${goal.scopeLabel}`;
+            }
+            const text = [feedback.question, ...after.checkIns.map(itemText)].filter(Boolean).join(" ");
+            const hasRoutineCheck = after.checkIns.some(
+              (checkIn) =>
+                checkIn.relatedType === "routine_goal" &&
+                checkIn.relatedId === goal.id &&
+                /(从今天|开始|试|多久|持续)/.test(itemText(checkIn))
+            );
+            return hasRoutineCheck && /(从今天|开始|试|多久|持续)/.test(text) ? true : "缺少 routine_goal 范围确认";
+          })
+        ]
+      }
+    ]
+  },
   {
     id: "complex_life_admin",
     title: "复合生活输入：睡觉、请假、上海行程与行前提醒",

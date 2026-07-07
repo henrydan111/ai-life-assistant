@@ -79,6 +79,7 @@ function hasRelatedRecord(state: AssistantState, kind: string, id: string) {
   if (kind === "shopping_item") return state.shoppingItems.some((item) => item.id === id && item.status !== "removed");
   if (kind === "project") return state.projects.some((project) => project.id === id && project.status !== "done");
   if (kind === "memory") return state.memoryItems.some((memory) => memory.id === id && memory.status === "suggested");
+  if (kind === "routine_goal") return state.routineGoals.some((goal) => goal.id === id && goal.status !== "cancelled");
   return false;
 }
 

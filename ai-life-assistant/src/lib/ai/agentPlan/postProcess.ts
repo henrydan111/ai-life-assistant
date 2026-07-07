@@ -18,7 +18,13 @@ function uniqueRef(actions: InterpretAction[], base: string) {
 
 function ensureActionRef(actions: InterpretAction[], index: number, base: string) {
   const action = actions[index];
-  if (!action || (action.type !== "add_task" && action.type !== "add_life_event" && action.type !== "add_shopping_item")) {
+  if (
+    !action ||
+    (action.type !== "add_task" &&
+      action.type !== "add_life_event" &&
+      action.type !== "add_shopping_item" &&
+      action.type !== "add_routine_goal")
+  ) {
     return { actions, ref: undefined };
   }
   if (action.ref) return { actions, ref: action.ref };
@@ -40,7 +46,8 @@ function repairExistingRelatedRefs(state: AssistantState, interpretation: AiInte
     task: new Set(state.tasks.map((task) => task.id)),
     shopping_item: new Set(state.shoppingItems.map((item) => item.id)),
     life_event: new Set(state.lifeEvents.map((event) => event.id)),
-    project: new Set(state.projects.map((project) => project.id))
+    project: new Set(state.projects.map((project) => project.id)),
+    routine_goal: new Set(state.routineGoals.map((goal) => goal.id))
   };
 
   return {
@@ -96,6 +103,108 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
   return { ...interpretation, actions };
 }
 
+function rawHasRecurringSleepGoal(rawText: string) {
+  return /(每天|每日|天天|每晚|daily|every day|every night)/i.test(rawText) && /(睡觉|睡|上床|休息)/.test(rawText);
+}
+
+function sleepTargetTime(rawText: string) {
+  if (/(半夜|午夜|零点|0点|24点|二十四点)/.test(rawText)) return "00:00";
+  const match = rawText.match(/(\d{1,2}|十[一二]?|十二|二十[一二三]?|二十四)\s*点\s*前/);
+  if (!match) return undefined;
+  const value = match[1];
+  const hour =
+    value === "十二"
+      ? 12
+      : value === "十一"
+        ? 11
+        : value === "二十四"
+          ? 24
+          : value.startsWith("二十")
+            ? 20 + (value.endsWith("一") ? 1 : value.endsWith("二") ? 2 : value.endsWith("三") ? 3 : 0)
+            : Number(value);
+  if (!Number.isFinite(hour)) return undefined;
+  return `${String(hour % 24).padStart(2, "0")}:00`;
+}
+
+function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretation): AiInterpretation {
+  if (!rawHasRecurringSleepGoal(rawText)) return interpretation;
+  const isRecent = /最近|近期|这段时间/.test(rawText);
+  const targetTime = sleepTargetTime(rawText);
+  const existingIndex = interpretation.actions.findIndex(
+    (action) => action.type === "add_routine_goal" && /(睡觉|睡|上床|休息)/.test(actionText(action))
+  );
+
+  if (existingIndex >= 0) {
+    let actions = interpretation.actions.map((action, index) => {
+      if (index !== existingIndex || action.type !== "add_routine_goal") return action;
+      const normalized: Extract<InterpretAction, { type: "add_routine_goal" }> = {
+        ...action,
+        cadence: "daily",
+        targetTime: action.targetTime ?? targetTime,
+        targetTimeRelation: action.targetTimeRelation ?? (targetTime ? "before" : undefined),
+        scope: isRecent && (!action.scope || action.scope === "unspecified") ? "recent" : action.scope,
+        scopeLabel: isRecent ? "最近" : action.scopeLabel
+      };
+      return normalized;
+    });
+
+    if (isRecent) {
+      const withRef = ensureActionRef(actions, existingIndex, "sleep_routine");
+      actions = withRef.actions;
+      const ref = withRef.ref;
+      const hasScopeCheckIn =
+        ref &&
+        actions.some(
+          (action) =>
+            action.type === "add_check_in" &&
+            action.relatedType === "routine_goal" &&
+            action.relatedRef === ref &&
+            /(从今天|开始|试|多久|持续|长期|最近|范围)/.test(actionText(action))
+        );
+      if (ref && !hasScopeCheckIn) {
+        actions.push({
+          type: "add_check_in",
+          title: "确认睡眠目标范围",
+          question: "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
+          relatedType: "routine_goal",
+          relatedRef: ref
+        });
+      }
+    }
+
+    return { ...interpretation, actions };
+  }
+
+  let actions = interpretation.actions;
+  const ref = uniqueRef(actions, "sleep_routine");
+  actions = [
+    {
+      type: "add_routine_goal",
+      ref,
+      title: targetTime ? `每天 ${targetTime} 前睡觉` : "每天按时睡觉",
+      cadence: "daily",
+      targetTime,
+      targetTimeRelation: targetTime ? "before" : undefined,
+      scope: isRecent ? "recent" : "ongoing",
+      scopeLabel: isRecent ? "最近" : undefined,
+      priority: "medium"
+    },
+    ...actions
+  ];
+
+  if (isRecent) {
+    actions.push({
+      type: "add_check_in",
+      title: "确认睡眠目标范围",
+      question: "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
+      relatedType: "routine_goal",
+      relatedRef: ref
+    });
+  }
+
+  return { ...interpretation, actions };
+}
+
 function ensureLeaveBossCheckIn(rawText: string, interpretation: AiInterpretation): AiInterpretation {
   if (!/请假/.test(rawText) || !/(老板|领导|提前|提醒)/.test(rawText)) return interpretation;
 
@@ -138,6 +247,7 @@ export function postProcessAgentPlanInterpretation(
   interpretation: AiInterpretation
 ): AiInterpretation {
   let next = splitCombinedTravelPrepCheckIns(interpretation);
+  next = ensureRecurringSleepGoal(rawText, next);
   next = ensureMentionedTravelDraft(rawText, next);
   next = ensureMentionedTravelPrepCheckIns(rawText, next);
   next = ensureLeaveBossCheckIn(rawText, next);

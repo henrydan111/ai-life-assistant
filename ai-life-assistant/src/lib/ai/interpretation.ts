@@ -1,4 +1,4 @@
-import type { EnergyLevel, Horizon, LifeEvent, MemoryWrite, ParseFeedback, Priority, ShoppingItem, Task } from "@/types/domain";
+import type { EnergyLevel, Horizon, LifeEvent, MemoryWrite, ParseFeedback, Priority, RoutineGoal, ShoppingItem, Task } from "@/types/domain";
 
 export type InterpretAction =
   | {
@@ -47,10 +47,22 @@ export type InterpretAction =
       participants?: string[];
     }
   | {
+      type: "add_routine_goal";
+      ref?: string;
+      title: string;
+      description?: string;
+      cadence?: RoutineGoal["cadence"];
+      targetTime?: string;
+      targetTimeRelation?: RoutineGoal["targetTimeRelation"];
+      scope?: RoutineGoal["scope"];
+      scopeLabel?: string;
+      priority?: Priority;
+    }
+  | {
       type: "add_check_in";
       title: string;
       question: string;
-      relatedType: "task" | "shopping_item" | "life_event" | "project";
+      relatedType: "task" | "shopping_item" | "life_event" | "project" | "routine_goal";
       relatedRef?: string;
       relatedId?: string;
       askAt?: string;
@@ -79,6 +91,7 @@ const actionTypes = [
   "add_shopping_item",
   "update_shopping_status",
   "add_life_event",
+  "add_routine_goal",
   "add_check_in",
   "add_mood_log"
 ] as const;
@@ -89,11 +102,15 @@ const energyLevels: EnergyLevel[] = ["low", "medium", "high"];
 const priorities: Priority[] = ["low", "medium", "high"];
 const shoppingStatuses: ShoppingItem["status"][] = ["needed", "ordered", "bought", "removed"];
 const lifeEventCategories: LifeEvent["category"][] = ["travel", "class", "appointment", "household", "outing", "other"];
+const routineCadences: RoutineGoal["cadence"][] = ["daily", "weekly", "custom"];
+const routineTargetTimeRelations: NonNullable<RoutineGoal["targetTimeRelation"]>[] = ["before", "at", "after"];
+const routineScopes: RoutineGoal["scope"][] = ["recent", "ongoing", "date_range", "unspecified"];
 const checkInRelatedTypes: Extract<InterpretAction, { type: "add_check_in" }>["relatedType"][] = [
   "task",
   "shopping_item",
   "life_event",
-  "project"
+  "project",
+  "routine_goal"
 ];
 const memoryTypes: MemoryWrite["type"][] = [
   "household",
@@ -306,6 +323,33 @@ function parseAction(value: unknown, index = 0, key = "actions"): ParseResult<In
           location,
           priority,
           participants
+        }
+      : null;
+    return { value: errors.length ? null : action, errors };
+  }
+
+  if (type === "add_routine_goal") {
+    const title = requiredStringField(value, "title", path, errors);
+    const ref = optionalStringField(value, "ref", path, errors);
+    const description = optionalStringField(value, "description", path, errors);
+    const cadence = optionalEnumField(value, "cadence", routineCadences, path, errors) ?? "custom";
+    const targetTime = optionalStringField(value, "targetTime", path, errors);
+    const targetTimeRelation = optionalEnumField(value, "targetTimeRelation", routineTargetTimeRelations, path, errors);
+    const scope = optionalEnumField(value, "scope", routineScopes, path, errors) ?? "unspecified";
+    const scopeLabel = optionalStringField(value, "scopeLabel", path, errors);
+    const priority = optionalEnumField(value, "priority", priorities, path, errors);
+    const action = title
+      ? {
+          type,
+          ref,
+          title,
+          description,
+          cadence,
+          targetTime,
+          targetTimeRelation,
+          scope,
+          scopeLabel,
+          priority
         }
       : null;
     return { value: errors.length ? null : action, errors };

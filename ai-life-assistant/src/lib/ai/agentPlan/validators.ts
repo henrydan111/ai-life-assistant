@@ -138,7 +138,9 @@ function validateCheckInReferences(actions: InterpretAction[]) {
         ? "add_life_event"
         : action.relatedType === "shopping_item"
           ? "add_shopping_item"
-          : "add_task";
+          : action.relatedType === "routine_goal"
+            ? "add_routine_goal"
+            : "add_task";
     if (refType !== expectedType) {
       errors.push(`actions[${index}] add_check_in relatedRef="${action.relatedRef}" 指向 ${refType}，但 relatedType=${action.relatedType}。`);
     }

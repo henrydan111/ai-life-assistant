@@ -65,11 +65,28 @@ export type LifeEvent = {
   updatedAt: string;
 };
 
+export type RoutineGoal = {
+  id: string;
+  title: string;
+  description?: string;
+  cadence: "daily" | "weekly" | "custom";
+  targetTime?: string;
+  targetTimeRelation?: "before" | "at" | "after";
+  scope: "recent" | "ongoing" | "date_range" | "unspecified";
+  scopeLabel?: string;
+  priority: Priority;
+  status: "active" | "paused" | "done" | "cancelled";
+  sourceInputId?: string;
+  confidence: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type AssistantCheckIn = {
   id: string;
   title: string;
   question: string;
-  relatedType: "task" | "shopping_item" | "life_event" | "project" | "memory";
+  relatedType: "task" | "shopping_item" | "life_event" | "project" | "memory" | "routine_goal";
   relatedId: string;
   askAt: string;
   status: "pending" | "answered" | "dismissed";
@@ -174,6 +191,7 @@ export type AssistantState = {
   tasks: Task[];
   projects: Project[];
   shoppingItems: ShoppingItem[];
+  routineGoals: RoutineGoal[];
   moodLogs: MoodLog[];
   lifeEvents: LifeEvent[];
   checkIns: AssistantCheckIn[];
@@ -212,6 +230,17 @@ export type DashboardData = {
     status: ShoppingItem["status"];
     expectedAt?: string;
   }>;
+  routineGoals: Array<{
+    id: string;
+    title: string;
+    cadence: RoutineGoal["cadence"];
+    targetTime?: string;
+    targetTimeRelation?: RoutineGoal["targetTimeRelation"];
+    scope: RoutineGoal["scope"];
+    scopeLabel?: string;
+    priority: Priority;
+    status: RoutineGoal["status"];
+  }>;
   state: string;
   prompts: AssistantCheckIn[];
 };
@@ -243,5 +272,5 @@ export type AiProcessingUpdate = {
 export type AssistantItemRef = {
   id: string;
   title: string;
-  kind: "task" | "life_event" | "check_in" | "shopping_item";
+  kind: "task" | "life_event" | "check_in" | "shopping_item" | "routine_goal";
 };

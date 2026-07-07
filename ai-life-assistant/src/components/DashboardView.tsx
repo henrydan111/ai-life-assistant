@@ -23,13 +23,33 @@ function priorityLabel(priority: Priority) {
   return priorityLabels[priority];
 }
 
+function cadenceLabel(cadence: DashboardData["routineGoals"][number]["cadence"]) {
+  if (cadence === "daily") return "每天";
+  if (cadence === "weekly") return "每周";
+  return "自定义";
+}
+
+function targetTimeLabel(goal: DashboardData["routineGoals"][number]) {
+  if (!goal.targetTime) return undefined;
+  const relation = goal.targetTimeRelation === "before" ? "前" : goal.targetTimeRelation === "after" ? "后" : "";
+  return `${goal.targetTime}${relation}`;
+}
+
+function routineScopeLabel(goal: DashboardData["routineGoals"][number]) {
+  if (goal.scopeLabel) return goal.scopeLabel;
+  if (goal.scope === "recent") return "最近";
+  if (goal.scope === "ongoing") return "长期";
+  if (goal.scope === "date_range") return "一段时间";
+  return "范围待确认";
+}
+
 function checkInIsDue(askAt: string) {
   return new Date(askAt).getTime() <= Date.now();
 }
 
 function visibleRelatedReminders(
   state: AssistantState,
-  relatedType: "task" | "life_event" | "shopping_item",
+  relatedType: "task" | "life_event" | "shopping_item" | "routine_goal",
   relatedId: string
 ) {
   return state.checkIns
@@ -84,6 +104,10 @@ export function DashboardView({
 
   function remindersForTask(taskId: string) {
     return state ? visibleRelatedReminders(state, "task", taskId) : [];
+  }
+
+  function remindersForRoutineGoal(goalId: string) {
+    return state ? visibleRelatedReminders(state, "routine_goal", goalId) : [];
   }
 
   function toggleItem(key: string) {
@@ -219,6 +243,82 @@ export function DashboardView({
           )}
         </ul>
       </section>
+
+      {dashboard.routineGoals.length ? (
+        <section className="dashboard-section routine-goals-section" aria-label="Routine goals">
+          <div className="dashboard-section-head">
+            <div className="dashboard-section-label">
+              <Clock size={17} aria-hidden="true" />
+              <span>节奏目标</span>
+            </div>
+            <span className="today-count">{dashboard.routineGoals.length}</span>
+          </div>
+          <ul className="routine-goal-list" aria-label="正在跟进的节奏目标">
+            {dashboard.routineGoals.map((goal) => {
+              const timeText = targetTimeLabel(goal);
+              const reminders = remindersForRoutineGoal(goal.id);
+              return (
+                <li className={reminders.length ? "routine-goal-item has-reminders" : "routine-goal-item"} key={goal.id}>
+                  <div className="routine-goal-row">
+                    <div className="routine-goal-main">
+                      <div className="item-title">{goal.title}</div>
+                      <div className="item-meta">
+                        {routineScopeLabel(goal)}
+                        {" · "}
+                        {cadenceLabel(goal.cadence)}
+                        {timeText ? ` · ${timeText}` : ""}
+                        {goal.status === "paused" ? " · 已暂停" : ""}
+                        {reminders.length ? ` · ${reminders.length}个确认` : ""}
+                      </div>
+                    </div>
+                    <ItemActionButtons
+                      className="hide-in-display compact-actions"
+                      target={{ id: goal.id, title: goal.title, kind: "routine_goal" }}
+                      onComplete={onCompleteItem}
+                      onDelete={onDeleteItem}
+                      onDiscuss={onDiscussItem}
+                      showComplete={false}
+                    />
+                  </div>
+                  {reminders.length ? (
+                    <ul className="related-reminders routine-related-reminders" aria-label={`${goal.title}的确认`}>
+                      {reminders.map((reminder) => (
+                        <li
+                          className={reminder.status === "answered" ? "related-reminder completed" : "related-reminder"}
+                          key={reminder.id}
+                        >
+                          <Clock size={13} aria-hidden="true" />
+                          <div className="related-reminder-main">
+                            <span>{reminder.title}</span>
+                            <small>
+                              {dayLabel(reminder.askAt, timezone)}
+                              {" · "}
+                              {formatTime(reminder.askAt, timezone)}
+                              {reminder.status === "answered" ? " · 已完成" : ""}
+                            </small>
+                            <p>{reminder.question}</p>
+                          </div>
+                          <ItemActionButtons
+                            className="hide-in-display compact-actions"
+                            target={{ id: reminder.id, title: reminder.question, kind: "check_in" }}
+                            onComplete={onCompleteItem}
+                            onDelete={onDeleteItem}
+                            onDiscuss={onDiscussItem}
+                            onRevert={onRevertItem}
+                            showComplete={reminder.status !== "answered"}
+                            showRevert={reminder.status === "answered"}
+                            showDiscuss={false}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
 
       {suggestedMemories.length || openConfirmations.length ? (
         <section className="dashboard-section memory-dashboard-section" aria-label="Needs confirmation">

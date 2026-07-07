@@ -3,14 +3,19 @@ import { actionText } from "./actionText";
 import { hasSeparateTravelPrepCheckIn, travelPrepCategoriesIn } from "./travelPrepPolicy";
 
 function rawHasAmbiguousSleepDeadline(rawText: string) {
+  if (rawHasRecurringSleepGoal(rawText)) return false;
   return rawText
     .split(/然后|另外|还有|并且|到时候|[，。,.!?！？；;]/)
     .some((segment) => {
       const mentionsSleep = /(睡觉|睡|上床|休息)/.test(segment);
       const mentionsTwelveBefore = /(12|十二)\s*[点:：]?\s*前/.test(segment);
-      const hasDisambiguator = /(中午|上午|下午|晚上|今晚|凌晨|零点|0点|24点|二十四点)/.test(segment);
+      const hasDisambiguator = /(中午|上午|下午|晚上|今晚|凌晨|零点|0点|24点|二十四点|半夜|午夜)/.test(segment);
       return mentionsSleep && mentionsTwelveBefore && !hasDisambiguator;
     });
+}
+
+function rawHasRecurringSleepGoal(rawText: string) {
+  return /(每天|每日|天天|每晚|daily|every day|every night)/i.test(rawText) && /(睡觉|睡|上床|休息)/.test(rawText);
 }
 
 function rawHasThursdayFridayLeave(rawText: string) {
@@ -19,6 +24,10 @@ function rawHasThursdayFridayLeave(rawText: string) {
 
 function rawHasShanghaiTrip(rawText: string) {
   return /上海/.test(rawText) && /(周日|周天|星期日|星期天)/.test(rawText) && /(去|高铁|火车|往返|晚饭|吃饭|订票)/.test(rawText);
+}
+
+function rawRequestsShanghaiPrep(rawText: string) {
+  return /上海/.test(rawText) && /(提醒|到时候|行前|高铁|火车|车票|订票|买票|票务|往返|行李|收拾|餐馆|餐厅|饭店|订位|订座)/.test(rawText);
 }
 
 function rawHasSuzhouTrip(rawText: string) {
@@ -66,6 +75,15 @@ export function validateCoreIntentCoverage(rawText: string, actions: InterpretAc
     }
   }
 
+  if (rawHasRecurringSleepGoal(rawText)) {
+    const hasRoutineGoal = actions.some(
+      (action) => action.type === "add_routine_goal" && /(睡觉|睡|上床|休息)/.test(actionText(action))
+    );
+    if (!hasRoutineGoal) {
+      errors.push("原文包含重复睡眠目标，最终 actions 必须用 add_routine_goal 承接每天/每晚的循环语义。");
+    }
+  }
+
   if (rawHasThursdayFridayLeave(rawText)) {
     const hasCombinedLeaveTask = actions.some((action) => {
       const text = actionText(action);
@@ -106,7 +124,7 @@ export function validateCoreIntentCoverage(rawText: string, actions: InterpretAc
     const hasShanghaiPrepReminder = finalStructure
       ? hasRelatedCheckIn(actions, /上海|行前|高铁|火车|车票|票|行李|收拾/, "life_event")
       : actions.some((action) => /上海|行前|高铁|火车|车票|票|行李|收拾/.test(actionText(action)));
-    if (/提醒|到时候|准备/.test(rawText) && !hasShanghaiPrepReminder) {
+    if (rawRequestsShanghaiPrep(rawText) && !hasShanghaiPrepReminder) {
       errors.push(
         finalStructure
           ? "上海行程的准备提醒必须挂到 life_event 下面，不能作为并列主待办或只写在 feedback 里。"

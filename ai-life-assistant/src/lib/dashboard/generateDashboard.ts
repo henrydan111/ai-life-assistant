@@ -78,6 +78,20 @@ export function generateDashboard(state: AssistantState): DashboardData {
         status: item.status,
         expectedAt: item.expectedAt
       })),
+    routineGoals: state.routineGoals
+      .filter((goal) => goal.status === "active" || goal.status === "paused")
+      .slice(0, 4)
+      .map((goal) => ({
+        id: goal.id,
+        title: goal.title,
+        cadence: goal.cadence,
+        targetTime: goal.targetTime,
+        targetTimeRelation: goal.targetTimeRelation,
+        scope: goal.scope,
+        scopeLabel: goal.scopeLabel,
+        priority: goal.priority,
+        status: goal.status
+      })),
     state: stateLine,
     prompts: state.checkIns.filter(promptIsDue).slice(0, 2)
   };

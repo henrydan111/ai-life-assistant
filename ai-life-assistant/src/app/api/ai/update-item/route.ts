@@ -38,6 +38,7 @@ const SYSTEM_PROMPT = `
 
 规则：
 - 只修改给定 target 及其 relatedCheckIns，不要新增主事项。
+- 当 target.kind 是 routine_goal 时，它是用户的节奏/习惯目标，不是一次性待办；title 可改目标表述，completed 表示目标已结束，deleted 表示取消目标。不要把它改成 task。
 - 当 target 是主事项时，payload.currentItem.relatedCheckIns 包含它下面全部提醒/确认项；用户说“高铁票那个”“行李提醒”“餐馆订位”时，应根据这些上下文更新对应 relatedCheckIns。
 - relatedCheckIns.status 与网页状态一致：pending 表示待完成，answered 表示已完成，dismissed 表示已删除/隐藏。
 - 如果用户更新的是 target 下面已有提醒的一部分，请改 relatedCheckIns，不要反问是否新增提醒。
@@ -66,6 +67,7 @@ function relatedTypeForTarget(target: AssistantItemRef) {
   if (target.kind === "life_event") return "life_event";
   if (target.kind === "shopping_item") return "shopping_item";
   if (target.kind === "task") return "task";
+  if (target.kind === "routine_goal") return "routine_goal";
   return undefined;
 }
 
@@ -95,6 +97,7 @@ function summarizeTargetState(state: AssistantState, target: AssistantItemRef) {
   if (target.kind === "task") return { item: state.tasks.find((task) => task.id === target.id), relatedCheckIns };
   if (target.kind === "life_event") return { item: state.lifeEvents.find((event) => event.id === target.id), relatedCheckIns };
   if (target.kind === "shopping_item") return { item: state.shoppingItems.find((item) => item.id === target.id), relatedCheckIns };
+  if (target.kind === "routine_goal") return { item: state.routineGoals.find((goal) => goal.id === target.id), relatedCheckIns };
   return { item: state.checkIns.find((checkIn) => checkIn.id === target.id), relatedCheckIns };
 }
 

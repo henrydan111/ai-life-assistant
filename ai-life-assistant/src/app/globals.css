@@ -1934,6 +1934,46 @@ button {
   gap: 8px;
 }
 
+.routine-goals-section {
+  gap: 11px;
+}
+
+.routine-goal-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routine-goal-item {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+  min-height: 52px;
+  border: 1px solid rgba(33, 119, 102, 0.16);
+  border-radius: 14px;
+  padding: 11px 12px;
+  background:
+    linear-gradient(180deg, rgba(231, 244, 238, 0.5), rgba(255, 255, 255, 0.72)),
+    var(--surface);
+}
+
+.routine-goal-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.routine-goal-main {
+  min-width: 0;
+}
+
+.routine-related-reminders {
+  padding-left: 8px;
+}
+
 .schedule-summary-section {
   flex: 1 1 auto;
   min-height: 0;

@@ -2,7 +2,7 @@ import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation"
 import { createId } from "@/lib/id";
 import { applyMemoryWrites } from "@/lib/memory/applyMemoryWrites";
 import { isSameLocalDay, nowIso } from "@/lib/time/parseTime";
-import type { AssistantCheckIn, AssistantState, ParseFeedback, RecurrenceCandidate, ShoppingItem, Task, TranscriptRepair } from "@/types/domain";
+import type { AssistantCheckIn, AssistantState, ParseFeedback, RecurrenceCandidate, RoutineGoal, ShoppingItem, Task, TranscriptRepair } from "@/types/domain";
 
 export type InterpretResult = {
   state: AssistantState;
@@ -84,6 +84,18 @@ function findSimilarLifeEvent(
     if (!sameTitleOrPlace) return false;
     if (!event.startsAt || !action.startsAt) return true;
     return isSameLocalDay(new Date(event.startsAt), new Date(action.startsAt));
+  });
+}
+
+function findSimilarRoutineGoal(
+  state: AssistantState,
+  action: Extract<InterpretAction, { type: "add_routine_goal" }>
+) {
+  return state.routineGoals.find((goal) => {
+    if (goal.status === "cancelled" || goal.status === "done") return false;
+    const sameTitle = similar(goal.title, action.title);
+    const sameTime = !goal.targetTime || !action.targetTime || goal.targetTime === action.targetTime;
+    return sameTitle && goal.cadence === (action.cadence ?? "custom") && sameTime;
   });
 }
 
@@ -189,6 +201,29 @@ function createShoppingTask(itemName: string, sourceInputId: string, dueAt?: str
     status: "todo",
     sourceInputId,
     confidence: 0.86,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function createRoutineGoalFromAction(
+  action: Extract<InterpretAction, { type: "add_routine_goal" }>,
+  sourceInputId: string
+): RoutineGoal {
+  const now = nowIso();
+  return {
+    id: createId("routine"),
+    title: titleCase(action.title),
+    description: action.description,
+    cadence: action.cadence ?? "custom",
+    targetTime: action.targetTime,
+    targetTimeRelation: action.targetTimeRelation,
+    scope: action.scope ?? "unspecified",
+    scopeLabel: action.scopeLabel,
+    priority: action.priority ?? "medium",
+    status: "active",
+    sourceInputId,
+    confidence: 0.82,
     createdAt: now,
     updatedAt: now
   };
@@ -387,6 +422,36 @@ export function applyInterpretation(
       };
       if (action.ref) refs[action.ref] = event.id;
       next = { ...next, lifeEvents: [event, ...next.lifeEvents] };
+      return;
+    }
+
+    if (action.type === "add_routine_goal") {
+      const existing = findSimilarRoutineGoal(next, action);
+      if (existing) {
+        if (action.ref) refs[action.ref] = existing.id;
+        next = {
+          ...next,
+          routineGoals: next.routineGoals.map((goal) =>
+            goal.id === existing.id
+              ? {
+                  ...goal,
+                  description: action.description ?? goal.description,
+                  targetTime: action.targetTime ?? goal.targetTime,
+                  targetTimeRelation: action.targetTimeRelation ?? goal.targetTimeRelation,
+                  scope: action.scope ?? goal.scope,
+                  scopeLabel: action.scopeLabel ?? goal.scopeLabel,
+                  priority: action.priority ?? goal.priority,
+                  updatedAt: nowIso()
+                }
+              : goal
+          )
+        };
+        return;
+      }
+
+      const goal = createRoutineGoalFromAction(action, inputId);
+      if (action.ref) refs[action.ref] = goal.id;
+      next = { ...next, routineGoals: [goal, ...next.routineGoals] };
       return;
     }
 

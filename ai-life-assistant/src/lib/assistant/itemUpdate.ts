@@ -76,6 +76,7 @@ function relatedAnchorForTarget(target: AssistantItemRef, checkIns: AssistantChe
   if (target.kind === "life_event") return { relatedType: "life_event" as const, relatedId: target.id };
   if (target.kind === "shopping_item") return { relatedType: "shopping_item" as const, relatedId: target.id };
   if (target.kind === "task") return { relatedType: "task" as const, relatedId: target.id };
+  if (target.kind === "routine_goal") return { relatedType: "routine_goal" as const, relatedId: target.id };
   if (target.kind === "check_in") {
     const checkIn = checkIns.find((item) => item.id === target.id);
     return checkIn ? { relatedType: checkIn.relatedType, relatedId: checkIn.relatedId } : undefined;
@@ -267,6 +268,20 @@ export function applyItemUpdatePlan(
               updatedAt: now
             }
           : item
+      )
+    };
+  } else if (target.kind === "routine_goal") {
+    updated = {
+      ...next,
+      routineGoals: next.routineGoals.map((goal) =>
+        goal.id === target.id
+          ? {
+              ...goal,
+              title: nextTitle ?? goal.title,
+              status: shouldDelete ? "cancelled" : shouldComplete ? "done" : goal.status,
+              updatedAt: now
+            }
+          : goal
       )
     };
   } else {

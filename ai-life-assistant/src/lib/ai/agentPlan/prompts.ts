@@ -6,7 +6,8 @@ export const ACTION_SCHEMA = `
     { "type": "add_shopping_item", "ref": "可选内部引用", "itemName": "...", "status": "needed|ordered|bought", "expectedAt": "ISO 时间", "createTask": true },
     { "type": "update_shopping_status", "itemName": "...", "status": "ordered|bought", "expectedAt": "ISO 时间" },
     { "type": "add_life_event", "ref": "trip", "title": "...", "description": "可选：相关细节", "category": "travel|class|appointment|household|outing|other", "startsAt": "ISO 时间", "location": "...", "priority": "low|medium|high" },
-    { "type": "add_check_in", "title": "...", "question": "...", "relatedType": "life_event|shopping_item|task|project", "relatedRef": "trip", "askAt": "ISO 时间" },
+    { "type": "add_routine_goal", "ref": "sleep_goal", "title": "...", "cadence": "daily|weekly|custom", "targetTime": "HH:mm", "targetTimeRelation": "before|at|after", "scope": "recent|ongoing|date_range|unspecified", "scopeLabel": "最近|长期|本月等", "priority": "low|medium|high" },
+    { "type": "add_check_in", "title": "...", "question": "...", "relatedType": "life_event|shopping_item|task|project|routine_goal", "relatedRef": "trip", "askAt": "ISO 时间" },
     { "type": "add_mood_log", "moodLabel": "...", "energyLevel": "low|medium|high", "note": "..." },
     { "type": "mark_task_done", "matchTitle": "..." }
   ]
@@ -99,6 +100,7 @@ ${ACTION_SCHEMA}
 - 请假、报备、和老板沟通这类准备提醒，应作为主请假待办下面的 add_check_in。
 - 用户说需要买某物：新增购物项，并创建一个今日待办。
 - 用户说已经买好或已下单某物：更新购物状态，不要再创建购买待办。
+- 用户表达每天、每晚、每周、长期或最近一段时间想养成的节奏，例如“最近每天12点前睡觉”，必须使用 add_routine_goal，不要保存成一次性 add_task。targetTime 用 HH:mm；“12点前睡觉”如果有“半夜/午夜/晚上/每晚”等上下文，targetTime 为 00:00 且 targetTimeRelation 为 before；如果用户只说“最近”，scope 为 recent，scopeLabel 必须是“最近”，不要写“待确认”；不确定的持续边界用 relatedType=routine_goal 的 add_check_in 追问从什么时候开始或持续到什么时候。
 - 用户提到出行：新增一个 life_event；把订票、行李、酒店、路线、餐馆订位等分别生成独立 check-in，挂在同一个 life_event 下。
 - 用户提到孩子兴趣班但缺持续时间：生成 check-in 追问持续多久和提前多久出门。
 - 用户只是寒暄、撤回不明确、或没有可执行生活管理意图时，actions 返回 []，不要创建占位待办。
@@ -107,7 +109,7 @@ ${ACTION_SCHEMA}
 - priority 用于 add_task 和 add_life_event，不用于 check-in。high 表示有明确后果、外部承诺、需要他人配合、阻塞后续安排或用户明确说“重要/必须/尽快”；medium 表示正常计划内事项或有时间但后果不强；low 表示可选、顺手、无明确截止或用户表达“不急”。不要仅因为有 dueAt/startsAt 就设为 high。
 - 时间必须用 ISO 8601；无法确定具体时间时必须省略 dueAt/startsAt，并用 feedback.question 或 add_check_in 向用户澄清。
 - 不要编造 7:59、2:00、3:00 这类没有来源的时间。推断时间只能使用自然默认值：上午 9:00、下午 17:00、晚上 20:00、睡前提醒 21:30-22:30；否则省略。
-- “今天12点前睡觉”如果没有“中午/今晚/凌晨/24点/零点”等上下文，语义不清晰。不要默认中午 12 点；生成今日睡觉目标，并立刻追问用户希望几点睡、几点提醒。确认前不要设置具体 dueAt。
+- “今天12点前睡觉”如果没有“中午/今晚/凌晨/24点/零点/半夜/午夜”等上下文，语义不清晰。不要默认中午 12 点；生成今日睡觉目标，并立刻追问用户希望几点睡、几点提醒。确认前不要设置具体 dueAt。若用户说“每天/每晚/最近每天”，这是循环节奏目标，应使用 add_routine_goal，而不是一次性 add_task。
 - 第一、二步中出现的每个意图必须在最终结构中被保留：可以合并成主活动或附属 check-in，但不能消失。
 - memory_candidates 当前只作为理解上下文，不要伪造成无意义待办；如果对当下有主动提醒价值，可生成 add_check_in。
 - memoryContext 是经过本地压缩和筛选的长期记忆，只是候选背景。只有与当前输入相关时才使用，不要逐字复述，不要过度推断。

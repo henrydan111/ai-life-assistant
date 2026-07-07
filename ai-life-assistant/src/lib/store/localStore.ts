@@ -28,6 +28,7 @@ type LegacyUserPreferences = UserPreferences & {
 
 type LegacyAssistantState = AssistantState & {
   memoryItems?: MemoryItem[];
+  routineGoals?: AssistantState["routineGoals"];
 };
 
 type SubmitInputOptions = {
@@ -157,6 +158,11 @@ function normalizeAssistantState(state: LegacyAssistantState): AssistantState {
       ...event,
       priority: event.priority ?? "medium"
     })),
+    routineGoals: (state.routineGoals ?? []).map((goal) => ({
+      ...goal,
+      priority: goal.priority ?? "medium",
+      status: goal.status ?? "active"
+    })),
     memoryItems: compactMemoryItems(state.memoryItems ?? [])
   };
 
@@ -225,6 +231,7 @@ export function createDefaultState(): AssistantState {
         updatedAt: now
       }
     ],
+    routineGoals: [],
     moodLogs: [],
     lifeEvents: [],
     checkIns: [],
@@ -510,6 +517,15 @@ export function useAssistantStore() {
               )
             };
           }
+          if (target.kind === "routine_goal") {
+            return {
+              ...current,
+              routineGoals: current.routineGoals.map((goal) =>
+                goal.id === target.id ? { ...goal, status: "done", updatedAt: now } : goal
+              ),
+              checkIns: dismissRelatedCheckIns(current.checkIns, "routine_goal", target.id)
+            };
+          }
           return {
             ...current,
             checkIns: current.checkIns.map((checkIn) =>
@@ -542,6 +558,14 @@ export function useAssistantStore() {
               ...current,
               shoppingItems: current.shoppingItems.map((item) =>
                 item.id === target.id ? { ...item, status: "needed", updatedAt: now } : item
+              )
+            };
+          }
+          if (target.kind === "routine_goal") {
+            return {
+              ...current,
+              routineGoals: current.routineGoals.map((goal) =>
+                goal.id === target.id ? { ...goal, status: "active", updatedAt: now } : goal
               )
             };
           }
@@ -581,6 +605,15 @@ export function useAssistantStore() {
                 item.id === target.id ? { ...item, status: "removed", updatedAt: now } : item
               ),
               checkIns: dismissRelatedCheckIns(current.checkIns, "shopping_item", target.id)
+            };
+          }
+          if (target.kind === "routine_goal") {
+            return {
+              ...current,
+              routineGoals: current.routineGoals.map((goal) =>
+                goal.id === target.id ? { ...goal, status: "cancelled", updatedAt: now } : goal
+              ),
+              checkIns: dismissRelatedCheckIns(current.checkIns, "routine_goal", target.id)
             };
           }
           return {

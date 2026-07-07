@@ -4,6 +4,7 @@ import type {
   LifeEvent,
   ParseFeedback,
   RecurrenceCandidate,
+  RoutineGoal,
   ShoppingItem,
   Task
 } from "@/types/domain";
@@ -72,6 +73,19 @@ function titleCase(text: string) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function sleepTargetTime(text: string) {
+  if (/(半夜|午夜|零点|0点|24点|二十四点)/.test(text)) return "00:00";
+  const match = text.match(/(\d{1,2}|十二|二十四)\s*点\s*前/);
+  if (!match) return undefined;
+  const value = match[1] === "十二" ? 12 : match[1] === "二十四" ? 24 : Number(match[1]);
+  if (!Number.isFinite(value)) return undefined;
+  return `${String(value % 24).padStart(2, "0")}:00`;
+}
+
+function isRecurringSleepInput(text: string) {
+  return /(每天|每日|天天|每晚|daily|every day|every night)/i.test(text) && /(睡觉|睡|上床|休息)/.test(text);
+}
+
 function shoppingTaskTitle(itemName: string) {
   return /[\u4e00-\u9fa5]/.test(itemName) ? `买${itemName}` : `Buy ${itemName}`;
 }
@@ -124,6 +138,15 @@ function findSimilarLifeEvent(events: LifeEvent[], title: string, location?: str
     if (!sameTitleOrPlace) return false;
     if (!event.startsAt || !startsAt) return true;
     return isSameLocalDay(new Date(event.startsAt), new Date(startsAt));
+  });
+}
+
+function findSimilarRoutineGoal(goals: RoutineGoal[], title: string, cadence: RoutineGoal["cadence"], targetTime?: string) {
+  return goals.find((goal) => {
+    if (goal.status === "cancelled" || goal.status === "done") return false;
+    if (goal.cadence !== cadence) return false;
+    if (targetTime && goal.targetTime && goal.targetTime !== targetTime) return false;
+    return similar(goal.title, title);
   });
 }
 
@@ -262,6 +285,63 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
     return {
       state: next,
       feedback: { title: "没有更改", detail: "我没有保存或修改任何事项。" }
+    };
+  }
+
+  if (isRecurringSleepInput(text)) {
+    const targetTime = sleepTargetTime(text);
+    const isRecent = /最近|近期|这段时间/.test(text);
+    const title = targetTime ? `每天 ${targetTime} 前睡觉` : "每天按时睡觉";
+    const existing = findSimilarRoutineGoal(next.routineGoals, title, "daily", targetTime);
+    const goal: RoutineGoal = {
+      id: existing?.id ?? createId("routine"),
+      title,
+      cadence: "daily",
+      targetTime,
+      targetTimeRelation: targetTime ? "before" : undefined,
+      scope: isRecent ? "recent" : "ongoing",
+      scopeLabel: isRecent ? "最近" : undefined,
+      priority: "medium",
+      status: "active",
+      sourceInputId: inputId,
+      confidence: targetTime ? 0.84 : 0.72,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    };
+    const routineGoals = existing
+      ? next.routineGoals.map((item) => (item.id === existing.id ? { ...item, ...goal } : item))
+      : [goal, ...next.routineGoals];
+    const question = isRecent ? "这个睡眠目标你想从今天开始执行，还是先试一段时间？" : undefined;
+    const checkIn: AssistantCheckIn | undefined = question
+      ? {
+          id: createId("check"),
+          title: "确认睡眠目标范围",
+          question,
+          relatedType: "routine_goal",
+          relatedId: goal.id,
+          askAt: now,
+          status: "pending",
+          createdAt: now
+        }
+      : undefined;
+
+    next = {
+      ...next,
+      routineGoals,
+      checkIns:
+        checkIn && !hasSimilarCheckIn(next.checkIns, checkIn.title, checkIn.question, "routine_goal", goal.id)
+          ? [checkIn, ...next.checkIns]
+          : next.checkIns
+    };
+    return {
+      state: next,
+      feedback: {
+        title: "节奏目标已记录",
+        detail: targetTime
+          ? `我已把每天 ${targetTime} 前睡觉保存为节奏目标。`
+          : "我已把每天按时睡觉保存为节奏目标。",
+        question
+      }
     };
   }
 
