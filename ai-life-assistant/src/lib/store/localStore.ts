@@ -61,17 +61,18 @@ function repairStoredLifeSemantics(state: AssistantState): AssistantState {
   next = {
     ...next,
     tasks: next.tasks.map((task) => {
-      if (task.status === "cancelled" || !/今天12点前睡觉/.test(task.title) || !task.dueAt) return task;
+      if (task.status === "cancelled" || !/12点前睡觉/.test(task.title)) return task;
       const { dueAt: _dueAt, ...withoutDueAt } = task;
       return {
         ...withoutDueAt,
+        title: "今天12点前睡觉",
         priority: "medium",
         updatedAt: now
       };
     })
   };
 
-  const sleepTask = next.tasks.find((task) => task.status !== "cancelled" && /今天12点前睡觉/.test(task.title));
+  const sleepTask = next.tasks.find((task) => task.status !== "cancelled" && /12点前睡觉/.test(task.title));
   if (sleepTask && !pendingCheckInExists(next, sleepTask.id, /睡觉|睡前|12点|十二点/)) {
     next = {
       ...next,

@@ -346,6 +346,7 @@ function normalizeAmbiguousSleep(rawText: string, actions: InterpretAction[]) {
       return {
         ...action,
         ref: sleepRef,
+        title: "今天12点前睡觉",
         dueAt: undefined,
         horizon: "today" as const,
         priority: "medium" as const,
@@ -519,6 +520,140 @@ export async function requestAgentPlanChatCompletion(
   return JSON.parse(text) as AgentPlanChatCompletionResponse;
 }
 
+function localNowText() {
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    dateStyle: "full",
+    timeStyle: "medium"
+  }).format(new Date());
+}
+
+async function understandInputWithAgentPlan({
+  rawText,
+  inputType,
+  state,
+  model,
+  now
+}: {
+  rawText: string;
+  inputType: "text" | "voice";
+  state: AssistantState;
+  model: string;
+  now: string;
+}) {
+  const result = normalizeIntentUnderstanding(
+    await requestAgentPlanJson({
+      model,
+      systemPrompt: UNDERSTANDING_PROMPT,
+      payload: {
+        now,
+        localNow: localNowText(),
+        timezone: "Asia/Shanghai",
+        rawText,
+        inputType,
+        state: summarizeState(state)
+      },
+      temperature: 0.1
+    })
+  );
+
+  if (!result) {
+    throw new Error("Agent Plan understanding stage did not match the expected schema.");
+  }
+
+  return result;
+}
+
+async function checkCoverageWithAgentPlan({
+  rawText,
+  understanding,
+  model,
+  now
+}: {
+  rawText: string;
+  understanding: IntentUnderstanding;
+  model: string;
+  now: string;
+}) {
+  const result = normalizeCoverageReview(
+    await requestAgentPlanJson({
+      model,
+      systemPrompt: COVERAGE_PROMPT,
+      payload: {
+        now,
+        localNow: localNowText(),
+        timezone: "Asia/Shanghai",
+        rawText,
+        feedback: understanding.feedback,
+        actions: understanding.actions,
+        memory_candidates: understanding.memoryCandidates,
+        proactive_checkins: understanding.proactiveCheckins
+      },
+      temperature: 0.1
+    }),
+    understanding
+  );
+
+  if (!result) {
+    throw new Error("Agent Plan coverage stage did not match the expected schema.");
+  }
+
+  return result;
+}
+
+async function planFinalActionsWithAgentPlan({
+  rawText,
+  inputType,
+  state,
+  understanding,
+  coverage,
+  model,
+  now
+}: {
+  rawText: string;
+  inputType: "text" | "voice";
+  state: AssistantState;
+  understanding: IntentUnderstanding;
+  coverage: CoverageReview;
+  model: string;
+  now: string;
+}) {
+  const interpretation = normalizeAiInterpretation(
+    await requestAgentPlanJson({
+      model,
+      systemPrompt: PLANNING_PROMPT,
+      payload: {
+        now,
+        localNow: localNowText(),
+        timezone: "Asia/Shanghai",
+        rawText,
+        inputType,
+        state: summarizeState(state),
+        understanding: {
+          feedback: understanding.feedback,
+          actions: understanding.actions,
+          memory_candidates: understanding.memoryCandidates,
+          proactive_checkins: understanding.proactiveCheckins
+        },
+        coverage: {
+          coverage: coverage.coverage,
+          missing_intents: coverage.missingIntents,
+          revised_actions: coverage.revisedActions,
+          memory_candidates: coverage.memoryCandidates.length ? coverage.memoryCandidates : understanding.memoryCandidates,
+          proactive_checkins: coverage.proactiveCheckins.length ? coverage.proactiveCheckins : understanding.proactiveCheckins
+        }
+      },
+      temperature: 0.2
+    })
+  );
+
+  if (!interpretation) {
+    throw new Error("Agent Plan planning stage did not match the expected schema.");
+  }
+
+  return interpretation;
+}
+
 export async function interpretWithAgentPlan({
   rawText,
   inputType,
@@ -534,32 +669,25 @@ export async function interpretWithAgentPlan({
     throw new Error("Agent Plan runtime is not configured.");
   }
 
-  const payload = await requestAgentPlanChatCompletion({
-    model: resolveAgentPlanLanguageModel(model),
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      {
-        role: "user",
-        content: JSON.stringify({
-          now: new Date().toISOString(),
-          rawText,
-          inputType,
-          state: summarizeState(state)
-        })
-      }
-    ],
-    temperature: 0.2,
-    response_format: { type: "json_object" }
+  const modelId = resolveAgentPlanLanguageModel(model);
+  const now = new Date().toISOString();
+  const understanding = await understandInputWithAgentPlan({
+    rawText,
+    inputType,
+    state,
+    model: modelId,
+    now
   });
-  const content = payload.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("Agent Plan returned an empty response.");
-  }
-
-  const interpretation = normalizeAiInterpretation(parseJsonObject(content));
-  if (!interpretation) {
-    throw new Error("Agent Plan response did not match the expected schema.");
-  }
+  const coverage = await checkCoverageWithAgentPlan({ rawText, understanding, model: modelId, now });
+  const interpretation = await planFinalActionsWithAgentPlan({
+    rawText,
+    inputType,
+    state,
+    understanding,
+    coverage,
+    model: modelId,
+    now
+  });
 
   return repairLifeSemantics(rawText, interpretation);
 }
