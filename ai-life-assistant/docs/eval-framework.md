@@ -127,6 +127,7 @@ Reports include:
 
 The live suite currently covers:
 
+- multi-intent capture where sleep, shopping, and an undated weekend trip must all remain visible on the dashboard
 - pending confirmation follow-up visibility on the dashboard
 - pending confirmation answers with additional same-utterance new intents
 - life-event time confirmations rejecting unrelated same-time shopping intents

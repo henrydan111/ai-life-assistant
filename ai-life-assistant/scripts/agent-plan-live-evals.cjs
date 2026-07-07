@@ -307,6 +307,55 @@ function mergeFeedback(confirmation, next) {
 
 const scenarios = [
   {
+    id: "multi_intent_sleep_milk_weekend_trip_dashboard",
+    title: "多意图输入：睡眠、牛奶和周末上海都必须在 dashboard 可见",
+    tags: ["smoke", "dashboard", "multi-intent", "travel", "routine"],
+    minScoreRatio: 1,
+    state: () => createState(),
+    steps: [
+      {
+        rawText: "我最近都希望每天能12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶。我这周末计划要去上海",
+        expectations: [
+          expect("保存购买牛奶事项", 2, ({ after }) => {
+            const milk = activeShoppingItems(after, /牛奶/);
+            if (milk.length !== 1) return `牛奶购物项数量=${milk.length}`;
+            return activeTasks(after, /买牛奶|牛奶/).length >= 1 || "缺少买牛奶今日事项";
+          }),
+          expect("保存睡眠为节奏目标，不是一次性待办", 2, ({ after }) => {
+            const goals = activeRoutineGoals(after, /睡觉|睡|休息/);
+            if (goals.length !== 1) return `睡眠节奏目标数量=${goals.length}`;
+            return activeTasks(after, /睡觉|睡|休息/).length === 0 || "睡眠目标不应生成普通待办";
+          }),
+          expect("保存周末上海出行草稿", 3, ({ after }) => {
+            const events = plannedEvents(after, /上海/);
+            return events.length === 1 || `上海 life_event 数量=${events.length}`;
+          }),
+          expect("dashboard 可见上海出行，即使时间待确认", 3, ({ dashboard }) => {
+            return /上海/.test(dashboard.visibleText) ? true : dashboard.visibleText || "dashboard 没有上海";
+          })
+        ]
+      },
+      {
+        rawText: "晚上/午夜12点",
+        expectations: [
+          expect("睡眠目标时间更新为 00:00 前", 3, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠节奏目标";
+            if (goal.targetTime !== "00:00") return `targetTime=${goal.targetTime}`;
+            return goal.targetTimeRelation === "before" || `targetTimeRelation=${goal.targetTimeRelation}`;
+          }),
+          expect("补充睡眠时间后仍保留上海出行", 3, ({ after }) => {
+            const events = plannedEvents(after, /上海/);
+            return events.length === 1 || `上海 life_event 数量=${events.length}`;
+          }),
+          expect("补充睡眠时间后 dashboard 仍可见上海", 4, ({ dashboard }) => {
+            return /上海/.test(dashboard.visibleText) ? true : dashboard.visibleText || "dashboard 没有上海";
+          })
+        ]
+      }
+    ]
+  },
+  {
     id: "pending_confirmation_followup_dashboard",
     title: "多轮确认：补充信息后 dashboard 不显示旧追问",
     tags: ["smoke", "dashboard", "clarification", "state-update"],

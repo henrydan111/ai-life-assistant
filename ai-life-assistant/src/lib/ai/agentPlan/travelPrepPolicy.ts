@@ -91,6 +91,18 @@ function mentionedTravelLocation(rawText: string) {
   return english?.[1]?.trim();
 }
 
+function travelTitle(rawText: string, location: string) {
+  if (!/[\u4e00-\u9fa5]/.test(location)) return `Trip to ${location}`;
+  if (/这周末|本周末|周末/.test(rawText)) return `本周末去${location}`;
+  return `去${location}`;
+}
+
+function travelDateQuestion(rawText: string, location: string) {
+  if (!/[\u4e00-\u9fa5]/.test(location)) return `When are you planning to go to ${location}?`;
+  if (/这周末|本周末|周末/.test(rawText)) return `这周末去${location}，具体是哪天、几点出发？`;
+  return `你打算哪天去${location}？`;
+}
+
 function includesText(text: string, value: string) {
   return text.toLowerCase().includes(value.toLowerCase());
 }
@@ -143,7 +155,7 @@ export function ensureMentionedTravelDraft(rawText: string, interpretation: AiIn
       {
         type: "add_life_event",
         ref,
-        title: /[\u4e00-\u9fa5]/.test(location) ? `去${location}` : `Trip to ${location}`,
+        title: travelTitle(rawText, location),
         category: "travel",
         location,
         priority: "medium"
@@ -151,7 +163,7 @@ export function ensureMentionedTravelDraft(rawText: string, interpretation: AiIn
       {
         type: "add_check_in",
         title: /[\u4e00-\u9fa5]/.test(location) ? "确认出行时间" : "Confirm trip date",
-        question: /[\u4e00-\u9fa5]/.test(location) ? `你打算哪天去${location}？` : `When are you planning to go to ${location}?`,
+        question: travelDateQuestion(rawText, location),
         relatedType: "life_event",
         relatedRef: ref
       },

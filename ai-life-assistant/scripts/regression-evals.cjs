@@ -168,6 +168,31 @@ const evals = [
     }
   },
   {
+    name: "dashboard snapshot keeps undated weekend travel visible",
+    run() {
+      const state = createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ]
+      });
+
+      const dashboard = generateVisibleDashboardSnapshot(state);
+
+      assert.match(dashboard.visibleText, /本周末去上海/);
+      assert.match(dashboard.visibleText, /时间待确认|待确认/);
+    }
+  },
+  {
     name: "dashboard snapshot hides answered confirmations",
     run() {
       const state = createState({
@@ -851,6 +876,23 @@ const evals = [
         const result = ensureMentionedTravelDraft(rawText, base);
         assert.equal(result.actions.filter((action) => action.type === "add_life_event").length, 0, rawText);
       });
+    }
+  },
+  {
+    name: "travel draft policy preserves coarse weekend travel wording",
+    run() {
+      const result = ensureMentionedTravelDraft("我这周末计划要去上海", {
+        feedback: { title: "已识别", detail: "需要确认时间。" },
+        actions: [],
+        memoryWrites: []
+      });
+      const event = result.actions.find((action) => action.type === "add_life_event");
+      const checkIn = result.actions.find((action) => action.type === "add_check_in");
+
+      assert.ok(event);
+      assert.match(actionText(event), /本周末.*上海/);
+      assert.ok(checkIn);
+      assert.match(actionText(checkIn), /具体是哪天|几点|上海/);
     }
   },
   {

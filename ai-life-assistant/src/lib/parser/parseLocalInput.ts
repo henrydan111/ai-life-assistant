@@ -247,6 +247,18 @@ function parseLocation(text: string) {
   return chinese?.[1]?.trim();
 }
 
+function travelTitle(text: string, location: string) {
+  if (!/[\u4e00-\u9fa5]/.test(text)) return `Trip to ${location}`;
+  if (/这周末|本周末|周末/.test(text)) return `本周末去${location}`;
+  return `去${location}`;
+}
+
+function travelDateQuestion(text: string, location: string) {
+  if (!/[\u4e00-\u9fa5]/.test(text)) return `When are you planning to go to ${location}?`;
+  if (/这周末|本周末|周末/.test(text)) return `这周末去${location}，具体是哪天、几点出发？`;
+  return `你打算哪天去${location}？`;
+}
+
 function isNoOpInput(text: string) {
   const normalized = normalize(text).trim().replace(/\s+/g, " ");
   return noOpWords.test(normalized) || normalized.split(/\s+/).every((token) => noOpTokens.test(token));
@@ -451,7 +463,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
   if (travelWords.test(lower) && parseLocation(text)) {
     const location = parseLocation(text)!;
     const startsAt = parseDueDate(text);
-    const title = /[\u4e00-\u9fa5]/.test(text) ? `去${location}` : `Trip to ${location}`;
+    const title = travelTitle(text, location);
     const existingEvent = findSimilarLifeEvent(next.lifeEvents, title, location, startsAt);
     const event: LifeEvent = {
       id: existingEvent?.id ?? createId("event"),
@@ -497,7 +509,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
           {
             id: createId("check"),
             title: /[\u4e00-\u9fa5]/.test(text) ? "确认出行时间" : "Confirm trip date",
-            question: /[\u4e00-\u9fa5]/.test(text) ? `你打算哪天去${location}？` : `When are you planning to go to ${location}?`,
+            question: travelDateQuestion(text, location),
             relatedType: "life_event",
             relatedId: event.id,
             askAt: now,
@@ -522,7 +534,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
         : {
             title: "出行已暂存",
             detail: `我先记下去${location}，但没有编造日期。`,
-            question: /[\u4e00-\u9fa5]/.test(text) ? `你打算哪天去${location}？` : `When are you planning to go to ${location}?`
+            question: travelDateQuestion(text, location)
           }
     };
   }

@@ -22,6 +22,7 @@ type CalendarItem = {
   kind: "task" | "event" | "check" | "shopping";
   target: AssistantItemRef;
   at: Date;
+  timeLabel?: string;
   meta?: string;
   reminders: CalendarReminder[];
 };
@@ -73,6 +74,14 @@ function parentKey(kind: string, id: string) {
   return `${kind}:${id}`;
 }
 
+function tentativeEventDate(title: string, description: string | undefined, today: Date) {
+  const text = `${title} ${description ?? ""}`;
+  if (/周末|本周末|这周末/.test(text)) {
+    return { at: addDays(today, 3), label: "本周末 · 时间待确认" };
+  }
+  return { at: addDays(today, 7), label: "时间待确认" };
+}
+
 function hasRelatedRecord(state: AssistantState, kind: string, id: string) {
   if (kind === "task") return state.tasks.some((task) => task.id === id && task.status !== "cancelled");
   if (kind === "life_event") return state.lifeEvents.some((event) => event.id === id && event.status !== "cancelled");
@@ -86,6 +95,7 @@ function hasRelatedRecord(state: AssistantState, kind: string, id: string) {
 function buildCalendarItems(state: AssistantState, hiddenTaskIds = new Set<string>()) {
   const items: CalendarItem[] = [];
   const parents = new Map<string, CalendarItem>();
+  const today = startOfLocalDay(new Date());
 
   function addItem(item: CalendarItem) {
     items.push(item);
@@ -106,14 +116,16 @@ function buildCalendarItems(state: AssistantState, hiddenTaskIds = new Set<strin
   }
 
   for (const event of state.lifeEvents) {
-    if (!event.startsAt || event.status === "done" || event.status === "cancelled") continue;
+    if (event.status === "done" || event.status === "cancelled") continue;
+    const tentative = event.startsAt ? undefined : tentativeEventDate(event.title, event.description, today);
     addItem({
       id: event.id,
       title: event.title,
       kind: "event",
       target: { id: event.id, title: event.title, kind: "life_event" },
-      at: new Date(event.startsAt),
-      meta: event.location,
+      at: event.startsAt ? new Date(event.startsAt) : tentative!.at,
+      timeLabel: tentative?.label,
+      meta: [event.location, tentative ? "待确认" : undefined].filter(Boolean).join(" · "),
       reminders: []
     });
   }
@@ -228,6 +240,7 @@ export function CalendarView({
                     const Icon = kindIcon[item.kind];
                     const itemKey = `${item.kind}-${item.id}`;
                     const isExpanded = Boolean(expandedItems[itemKey]);
+                    const timeText = item.timeLabel ?? `${relativeDay(item.at, today, timezone)} · ${formatTime(item.at.toISOString(), timezone)}`;
                     return (
                       <li className={item.reminders.length ? "horizon-item-shell has-reminders" : "horizon-item-shell"} key={itemKey}>
                         <div className="horizon-item">
@@ -250,9 +263,7 @@ export function CalendarView({
                           <div className="horizon-item-main">
                             <span>{item.title}</span>
                             <small>
-                              {relativeDay(item.at, today, timezone)}
-                              {" · "}
-                              {formatTime(item.at.toISOString(), timezone)}
+                              {timeText}
                               {item.meta ? (
                                 <>
                                   {" · "}

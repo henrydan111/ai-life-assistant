@@ -1,4 +1,5 @@
 import { generateDashboard } from "@/lib/dashboard/generateDashboard";
+import { addDays, startOfLocalDay } from "@/lib/time/parseTime";
 import type { AssistantCheckIn, AssistantState, DashboardData } from "@/types/domain";
 
 type VisibleCheckIn = Pick<AssistantCheckIn, "id" | "title" | "question" | "relatedType" | "relatedId" | "askAt" | "status">;
@@ -84,9 +85,20 @@ function hasRelatedRecord(state: AssistantState, checkIn: AssistantCheckIn) {
   return false;
 }
 
+function tentativeEventMeta(title: string, description: string | undefined) {
+  const text = `${title} ${description ?? ""}`;
+  return /周末|本周末|这周末/.test(text) ? "本周末 · 时间待确认" : "时间待确认";
+}
+
+function tentativeEventDate(title: string, description: string | undefined, today: Date) {
+  const text = `${title} ${description ?? ""}`;
+  return /周末|本周末|这周末/.test(text) ? addDays(today, 3) : addDays(today, 7);
+}
+
 function buildUpcomingSnapshot(state: AssistantState, hiddenTaskIds: string[]): VisibleItemWithReminders[] {
   const items: VisibleItemWithReminders[] = [];
   const hiddenTasks = new Set(hiddenTaskIds);
+  const today = startOfLocalDay(new Date());
 
   state.tasks.forEach((task) => {
     if (hiddenTasks.has(task.id) || !task.dueAt || task.status === "done" || task.status === "cancelled") return;
@@ -99,11 +111,13 @@ function buildUpcomingSnapshot(state: AssistantState, hiddenTaskIds: string[]): 
   });
 
   state.lifeEvents.forEach((event) => {
-    if (!event.startsAt || event.status === "done" || event.status === "cancelled") return;
+    if (event.status === "done" || event.status === "cancelled") return;
     items.push({
       id: event.id,
       title: event.title,
-      meta: [event.startsAt, event.location].filter(Boolean).join(" · "),
+      meta: [event.startsAt ?? tentativeEventMeta(event.title, event.description), event.location, event.startsAt ? undefined : "待确认"]
+        .filter(Boolean)
+        .join(" · "),
       reminders: visibleRelatedReminders(state, "life_event", event.id)
     });
   });
@@ -129,8 +143,14 @@ function buildUpcomingSnapshot(state: AssistantState, hiddenTaskIds: string[]): 
   });
 
   return items.sort((left, right) => {
-    const leftTime = new Date(left.meta?.split(" · ")[0] ?? 0).getTime();
-    const rightTime = new Date(right.meta?.split(" · ")[0] ?? 0).getTime();
+    const leftEvent = state.lifeEvents.find((event) => event.id === left.id);
+    const rightEvent = state.lifeEvents.find((event) => event.id === right.id);
+    const leftTime = leftEvent && !leftEvent.startsAt
+      ? tentativeEventDate(leftEvent.title, leftEvent.description, today).getTime()
+      : new Date(left.meta?.split(" · ")[0] ?? 0).getTime();
+    const rightTime = rightEvent && !rightEvent.startsAt
+      ? tentativeEventDate(rightEvent.title, rightEvent.description, today).getTime()
+      : new Date(right.meta?.split(" · ")[0] ?? 0).getTime();
     return leftTime - rightTime;
   });
 }
