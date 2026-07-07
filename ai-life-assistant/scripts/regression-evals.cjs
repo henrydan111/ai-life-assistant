@@ -17,6 +17,7 @@ const { confirmationTraceMeta, withoutConfirmationTrace } = jiti("../src/lib/ai/
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
 const { applyShoppingPolicy } = jiti("../src/lib/ai/productCompiler/policies/shoppingPolicy.ts");
+const { repairFeedbackCopy } = jiti("../src/lib/ai/productCompiler/responseRepair.ts");
 const { parseJsonObject } = jiti("../src/lib/ai/agentPlan/validatedJson.ts");
 const {
   applyInterpretResultIfFresh,
@@ -1335,6 +1336,29 @@ const evals = [
       assert.match(errors, /日常目标|短期\/长期|最近/);
       assert.match(errors, /明天中午|提醒时间/);
       assert.match(errors, /周日下午2点|startsAt|具体日期/);
+    }
+  },
+  {
+    name: "ResponseRepair owns unsafe feedback sanitization",
+    run() {
+      const rawText = "明天买牛奶";
+      const trace = [];
+      const result = repairFeedbackCopy(rawText, {
+        feedback: {
+          title: "明天中午买牛奶",
+          detail: "我已帮你安排明天中午买牛奶。",
+          question: "是否需要明天中午提醒你买牛奶？"
+        },
+        actions: [],
+        memoryWrites: []
+      }, trace);
+
+      const visibleFeedback = [result.feedback.title, result.feedback.detail, result.feedback.question].filter(Boolean).join(" ");
+      assert.doesNotMatch(visibleFeedback, /明天中午|午饭前|午餐前/);
+      assert.equal(result.feedback.title, "已整理事项");
+      assert.equal(result.feedback.detail, "我已按已确认的信息整理，并把不确定的部分留作确认。");
+      assert.equal(result.feedback.question, undefined);
+      assert.equal(trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
     }
   },
   {
