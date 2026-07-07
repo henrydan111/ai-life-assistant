@@ -4,9 +4,13 @@ Please review this GitHub repo:
 
 https://github.com/henrydan111/ai-life-assistant
 
-Use the latest `main` branch. The current relevant HEAD should be:
+Use the latest `main` branch.
 
-`e9de1e8 Address Agent Plan review safety gaps`
+The V2 architecture proposal was introduced in:
+
+`817b3df Document Agent Plan V2 architecture`
+
+If `main` has advanced, review the latest `main` plus the V2 design document referenced below.
 
 This project is a voice-first AI life assistant / AI secretary for everyday life. It helps users manage tasks, schedules, reminders, shopping, memory, check-ins, and life events from natural language or voice.
 
