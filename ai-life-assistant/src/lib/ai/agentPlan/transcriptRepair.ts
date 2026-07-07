@@ -1,5 +1,5 @@
-import { DEFAULT_TIMEZONE } from "@/lib/time/parseTime";
 import type { TranscriptRepair } from "@/types/domain";
+import { localNowText } from "./context";
 import { canUseAgentPlan, resolveAgentPlanLanguageModel, runtimeTimezone } from "./provider";
 import { requestValidatedAgentPlanJson } from "./validatedJson";
 
@@ -42,14 +42,6 @@ function optionalNumber(value: unknown) {
 
 function rawArray(value: unknown) {
   return Array.isArray(value) ? value : [];
-}
-
-function localNowText(timezone = DEFAULT_TIMEZONE) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: timezone,
-    dateStyle: "full",
-    timeStyle: "medium"
-  }).format(new Date());
 }
 
 function normalizeTranscriptRepair(value: unknown, rawTranscript: string): TranscriptRepair | null {
