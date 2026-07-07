@@ -64,6 +64,19 @@ export function shouldApplyInterpretResult(
   return getInterpretStateUpdateBlockReason(result, currentRevision, request) === null;
 }
 
+export function applyInterpretResultIfFresh(
+  result: Pick<InterpretResult, "provider" | "safeFailure" | "stateUnchanged" | "clientRequestId" | "baseRevision" | "state">,
+  currentRevision: number,
+  request: Partial<RequestRevision> | undefined,
+  applyState: (state: AssistantState) => void
+): InterpretStateUpdateBlockReason | null {
+  const blockReason = getInterpretStateUpdateBlockReason(result, currentRevision, request);
+  if (!blockReason && result.state) {
+    applyState(result.state);
+  }
+  return blockReason;
+}
+
 export function buildStaleInterpretResultFeedback(): ParseFeedback {
   return {
     title: "没有覆盖当前总览",

@@ -16,6 +16,7 @@ const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWi
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
 const {
+  applyInterpretResultIfFresh,
   buildStaleInterpretResultFeedback,
   getInterpretStateUpdateBlockReason,
   isStaleInterpretResult,
@@ -749,16 +750,33 @@ const evals = [
     name: "same-base interpretation race drops the second whole-state result",
     run() {
       let currentRevision = 0;
+      let committedState = createState();
       const requestA = { clientRequestId: "request_a", baseRevision: currentRevision };
       const requestB = { clientRequestId: "request_b", baseRevision: currentRevision };
-      const resultA = { clientRequestId: "request_a", baseRevision: 0 };
-      const resultB = { clientRequestId: "request_b", baseRevision: 0 };
+      const stateA = createState({ tasks: [{ id: "task_a", title: "买牛奶" }] });
+      const stateB = createState({ tasks: [{ id: "task_b", title: "买鸡蛋" }] });
+      const commitState = (nextState) => {
+        if (nextState !== committedState) {
+          currentRevision += 1;
+          committedState = nextState;
+        }
+      };
 
-      assert.equal(shouldApplyInterpretResult(resultA, currentRevision, requestA), true);
-      currentRevision += 1;
+      assert.equal(shouldApplyInterpretResult({ clientRequestId: "request_a", baseRevision: 0 }, currentRevision, requestA), true);
+      assert.equal(
+        applyInterpretResultIfFresh({ clientRequestId: "request_a", baseRevision: 0, state: stateA }, currentRevision, requestA, commitState),
+        null
+      );
+      assert.equal(currentRevision, 1);
+      assert.equal(committedState.tasks[0].id, "task_a");
 
-      assert.equal(shouldApplyInterpretResult(resultB, currentRevision, requestB), false);
-      assert.equal(getInterpretStateUpdateBlockReason(resultB, currentRevision, requestB), "stale");
+      assert.equal(shouldApplyInterpretResult({ clientRequestId: "request_b", baseRevision: 0 }, currentRevision, requestB), false);
+      assert.equal(
+        applyInterpretResultIfFresh({ clientRequestId: "request_b", baseRevision: 0, state: stateB }, currentRevision, requestB, commitState),
+        "stale"
+      );
+      assert.equal(currentRevision, 1);
+      assert.equal(committedState.tasks[0].id, "task_a");
     }
   },
   {

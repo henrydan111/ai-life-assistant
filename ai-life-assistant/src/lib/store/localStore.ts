@@ -16,8 +16,8 @@ import { createId } from "@/lib/id";
 import { defaultAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { compactMemoryItems } from "@/lib/memory/compactMemoryItems";
 import {
+  applyInterpretResultIfFresh,
   buildStaleInterpretResultFeedback,
-  getInterpretStateUpdateBlockReason,
   shouldSkipInterpretStateUpdate,
   type InterpretResult,
   type RequestRevision
@@ -367,6 +367,14 @@ export function useAssistantStore() {
     setRawState(next);
   }, []);
 
+  const applyResultIfFresh = useCallback((result: InterpretResult, revision: RequestRevision) => {
+    return applyInterpretResultIfFresh(result, revisionRef.current, revision, (nextState) => {
+      setState(normalizeAssistantState(nextState));
+    });
+  }, [setState]);
+
+  const staleFeedback = useCallback(() => buildStaleInterpretResultFeedback(), []);
+
   useEffect(() => {
     setState(loadAssistantState());
     setHydrated(true);
@@ -391,12 +399,11 @@ export function useAssistantStore() {
         };
         if (onProgress) {
           const result = await submitInputWithProgress(rawText, inputType, requestState, onProgress, revision, options);
-          const blockReason = getInterpretStateUpdateBlockReason(result, revisionRef.current, revision);
+          const blockReason = applyResultIfFresh(result, revision);
           if (!blockReason) {
             if (!result.state) throw new Error("AI interpretation result did not include state.");
-            setState(normalizeAssistantState(result.state));
           } else if (blockReason !== "skip") {
-            const feedback = buildStaleInterpretResultFeedback();
+            const feedback = staleFeedback();
             onProgress({
               stage: "done",
               status: "attention",
@@ -427,12 +434,11 @@ export function useAssistantStore() {
         if (!response.ok || !result.feedback || (!result.state && !skipStateUpdate)) {
           throw new Error(result.error ?? "AI interpretation failed.");
         }
-        const blockReason = getInterpretStateUpdateBlockReason(result, revisionRef.current, revision);
+        const blockReason = applyResultIfFresh(result, revision);
         if (!blockReason) {
           if (!result.state) throw new Error("AI interpretation result did not include state.");
-          setState(normalizeAssistantState(result.state));
         } else if (blockReason !== "skip") {
-          return buildStaleInterpretResultFeedback();
+          return staleFeedback();
         }
         return result.feedback;
       },
@@ -693,18 +699,20 @@ export function useAssistantStore() {
           })
         });
         const result = (await response.json()) as InterpretResult;
-        if (!response.ok || !result.state || !result.feedback) {
+        const skipStateUpdate = shouldSkipInterpretStateUpdate(result);
+        if (!response.ok || !result.feedback || (!result.state && !skipStateUpdate)) {
           throw new Error(result.error ?? "AI item update failed.");
         }
-        const blockReason = getInterpretStateUpdateBlockReason(result, revisionRef.current, revision);
-        if (blockReason && blockReason !== "skip") {
-          return buildStaleInterpretResultFeedback();
+        const blockReason = applyResultIfFresh(result, revision);
+        if (!blockReason) {
+          if (!result.state) throw new Error("AI item update result did not include state.");
+        } else if (blockReason !== "skip") {
+          return staleFeedback();
         }
-        setState(normalizeAssistantState(result.state));
         return result.feedback;
       }
     }),
-    [setState]
+    [applyResultIfFresh, setState, staleFeedback]
   );
 
   return { state, hydrated, ...actions };

@@ -121,6 +121,8 @@ Reports include:
 - request metadata echo for `clientRequestId` / `baseRevision`
 - per-expectation failure details
 
+The direct site-flow runner calls the API and then applies the returned state in-process, so it verifies metadata echo and dashboard-visible product carry-through rather than the browser store's stale-result blocker. Stale whole-state results are intentionally dropped in store-level regression tests today; that is a safety-first PoC behavior until the assistant returns mergeable mutation patches.
+
 `eval-results/` is ignored by Git because reports may contain user-like scenario text and model outputs.
 
 ## Current Scenario Coverage
