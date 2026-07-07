@@ -60,14 +60,25 @@ function tonightSleepDueAt() {
   return todayAt(23, 59);
 }
 
-function sleepReminderAt() {
-  const reminder = new Date();
-  reminder.setHours(22, 0, 0, 0);
-  if (reminder.getTime() > Date.now()) return reminder.toISOString();
+function normalizeTonightSleepDueAt(existingDueAt?: string) {
+  if (!existingDueAt) return tonightSleepDueAt();
+  const date = new Date(existingDueAt);
+  if (Number.isNaN(date.getTime())) return tonightSleepDueAt();
+  if (date.getHours() === 0 && date.getMinutes() === 0) {
+    date.setMinutes(date.getMinutes() - 1);
+  }
+  return date.toISOString();
+}
 
-  const due = new Date(tonightSleepDueAt());
-  due.setHours(Math.max(0, due.getHours() - 1), due.getMinutes(), 0, 0);
-  return due.toISOString();
+function sleepReminderAt(dueAt = tonightSleepDueAt()) {
+  const due = new Date(dueAt);
+  const reminder = new Date(due);
+  reminder.setHours(reminder.getHours() - 2, reminder.getMinutes(), 0, 0);
+  if (reminder.getTime() > Date.now() || due.getTime() <= Date.now()) return reminder.toISOString();
+
+  const lateReminder = new Date(due);
+  lateReminder.setHours(Math.max(0, lateReminder.getHours() - 1), lateReminder.getMinutes(), 0, 0);
+  return lateReminder.toISOString();
 }
 
 function pendingCheckInExists(state: AssistantState, relatedId: string, pattern: RegExp) {
@@ -89,7 +100,7 @@ function sleepReminderExists(state: AssistantState, relatedId: string) {
   );
 }
 
-function addSleepReminderIfNeeded(state: AssistantState, taskId: string) {
+function addSleepReminderIfNeeded(state: AssistantState, taskId: string, dueAt = tonightSleepDueAt()) {
   if (sleepReminderExists(state, taskId)) return state;
   const now = nowIso();
   return {
@@ -101,7 +112,7 @@ function addSleepReminderIfNeeded(state: AssistantState, taskId: string) {
         question: "快到睡觉时间了，开始准备休息吗？",
         relatedType: "task" as const,
         relatedId: taskId,
-        askAt: sleepReminderAt(),
+        askAt: sleepReminderAt(dueAt),
         status: "pending" as const,
         createdAt: now
       },
@@ -131,6 +142,7 @@ function resolveSleepClarification(state: AssistantState, rawText: string, input
 
   const now = nowIso();
   const inputId = createId("input");
+  const dueAt = tonightSleepDueAt();
   const updated: AssistantState = {
     ...state,
     inputs: [
@@ -149,7 +161,7 @@ function resolveSleepClarification(state: AssistantState, rawText: string, input
             ...task,
             title: "今晚24:00前睡觉",
             horizon: "today",
-            dueAt: tonightSleepDueAt(),
+            dueAt,
             priority: "medium",
             energyRequired: "low",
             updatedAt: now
@@ -162,7 +174,7 @@ function resolveSleepClarification(state: AssistantState, rawText: string, input
   };
 
   return {
-    state: addSleepReminderIfNeeded(updated, targetTask.id),
+    state: addSleepReminderIfNeeded(updated, targetTask.id, dueAt),
     feedback: {
       title: "已更新睡觉时间",
       detail: "我已把这条待办更新为今晚 24:00 前睡觉，并把睡前提醒放在事项下面。"
@@ -178,6 +190,7 @@ function repairStoredLifeSemantics(state: AssistantState): AssistantState {
   );
 
   if (clarifiedSleepTask) {
+    const dueAt = normalizeTonightSleepDueAt(clarifiedSleepTask.dueAt);
     next = {
       ...next,
       tasks: next.tasks
@@ -188,7 +201,7 @@ function repairStoredLifeSemantics(state: AssistantState): AssistantState {
                 ...task,
                 title: "今晚24:00前睡觉",
                 horizon: "today",
-                dueAt: tonightSleepDueAt(),
+                dueAt,
                 priority: "medium",
                 energyRequired: "low",
                 updatedAt: now
@@ -199,7 +212,7 @@ function repairStoredLifeSemantics(state: AssistantState): AssistantState {
         isSleepClarification(checkIn) ? { ...checkIn, status: "answered" as const } : checkIn
       )
     };
-    next = addSleepReminderIfNeeded(next, clarifiedSleepTask.id);
+    next = addSleepReminderIfNeeded(next, clarifiedSleepTask.id, dueAt);
   }
 
   if (!clarifiedSleepTask) {
