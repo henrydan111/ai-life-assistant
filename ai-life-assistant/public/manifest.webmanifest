@@ -1,0 +1,16 @@
+{
+  "name": "AI Life Assistant",
+  "short_name": "Life Panel",
+  "description": "A calm AI life dashboard for spare screens.",
+  "start_url": "/dashboard",
+  "display": "standalone",
+  "background_color": "#f5f7f4",
+  "theme_color": "#287c7b",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
