@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
+import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { AssistantState, TranscriptRepair } from "@/types/domain";
 
 export const runtime = "nodejs";
@@ -34,7 +35,11 @@ export async function POST(request: Request) {
   const inputType = body.inputType === "voice" ? "voice" : "text";
 
   if (!canUseAgentPlan()) {
-    return NextResponse.json({ error: "AI 解析服务未配置，无法保存这次输入。" }, { status: 503 });
+    const result = parseLocalInput(body.rawText, body.state, inputType);
+    return NextResponse.json({
+      ...result,
+      provider: "local_parser_fallback"
+    });
   }
 
   try {

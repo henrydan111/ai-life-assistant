@@ -69,7 +69,7 @@ export type AssistantCheckIn = {
   id: string;
   title: string;
   question: string;
-  relatedType: "task" | "shopping_item" | "life_event" | "project";
+  relatedType: "task" | "shopping_item" | "life_event" | "project" | "memory";
   relatedId: string;
   askAt: string;
   status: "pending" | "answered" | "dismissed";
@@ -130,6 +130,7 @@ export type MemoryContext = {
   activePatterns: string[];
   openLoops: string[];
   assistantPreferences: string[];
+  pendingConfirmations: string[];
 };
 
 export type TranscriptRepair = {
@@ -150,6 +151,7 @@ export type UserPreferences = {
   preferredLanguage: "en" | "zh";
   languageModel?: string;
   modelChoiceVersion?: number;
+  timezone: string;
   wakeTime: string;
   sleepTime: string;
   planningStyle: "light" | "balanced" | "ambitious";

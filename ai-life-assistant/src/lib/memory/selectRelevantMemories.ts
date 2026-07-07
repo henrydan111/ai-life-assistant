@@ -33,7 +33,6 @@ function memoryScore(memory: MemoryItem, rawText: string, tags: string[]) {
   let score = 0;
 
   if (memory.status === "active") score += 2;
-  if (memory.status === "suggested") score += 1.2;
   if (memory.sensitivity === "high" && !includesAny(text, memory.tags) && !includesAny(text, memory.entities)) return -1;
   if (includesAny(text, memory.entities)) score += 4;
   if (includesAny(text, memory.tags)) score += 3;
@@ -65,10 +64,10 @@ function pushLimited(target: string[], item: string, total: { chars: number }) {
   total.chars += text.length;
 }
 
-export function selectRelevantMemoryItems(rawText: string, state: AssistantState) {
+function rankedMemoryItems(rawText: string, state: AssistantState, statuses: MemoryItem["status"][]) {
   const tags = relatedTags(rawText);
   return (state.memoryItems ?? [])
-    .filter((memory) => memory.status === "active" || memory.status === "suggested")
+    .filter((memory) => statuses.includes(memory.status))
     .map((memory) => ({ memory, score: memoryScore(memory, rawText, tags) }))
     .filter((item) => item.score > 0)
     .sort((left, right) => right.score - left.score)
@@ -76,14 +75,20 @@ export function selectRelevantMemoryItems(rawText: string, state: AssistantState
     .map((item) => item.memory);
 }
 
+export function selectRelevantMemoryItems(rawText: string, state: AssistantState) {
+  return rankedMemoryItems(rawText, state, ["active"]);
+}
+
 export function selectRelevantMemories(rawText: string, state: AssistantState): MemoryContext {
   const selected = selectRelevantMemoryItems(rawText, state);
+  const pending = rankedMemoryItems(rawText, state, ["suggested"]);
   const total = { chars: 0 };
   const context: MemoryContext = {
     stableFacts: [],
     activePatterns: [],
     openLoops: [],
-    assistantPreferences: []
+    assistantPreferences: [],
+    pendingConfirmations: []
   };
 
   selected.forEach((memory) => {
@@ -108,6 +113,10 @@ export function selectRelevantMemories(rawText: string, state: AssistantState): 
   if (total.chars < LIMITS.maxTotalChars) {
     pushLimited(context.assistantPreferences, "重要长期提醒和 recurring 设置需要先询问用户确认。", total);
   }
+
+  pending.forEach((memory) => {
+    pushLimited(context.pendingConfirmations, `待用户确认，不要当作事实：${memory.summary}`, total);
+  });
 
   return context;
 }

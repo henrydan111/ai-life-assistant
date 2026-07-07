@@ -1,7 +1,7 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
 import { createId } from "@/lib/id";
 import { applyMemoryWrites } from "@/lib/memory/applyMemoryWrites";
-import { nowIso } from "@/lib/time/parseTime";
+import { isSameLocalDay, nowIso } from "@/lib/time/parseTime";
 import type { AssistantCheckIn, AssistantState, ParseFeedback, RecurrenceCandidate, ShoppingItem, Task, TranscriptRepair } from "@/types/domain";
 
 export type InterpretResult = {
@@ -31,6 +31,53 @@ function titleCase(text: string) {
 
 function shoppingTaskTitle(itemName: string) {
   return /[\u4e00-\u9fa5]/.test(itemName) ? `买${itemName}` : `Buy ${itemName}`;
+}
+
+function sameDueWindow(left?: string, right?: string) {
+  if (!left || !right) return true;
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+  if (!Number.isFinite(leftDate.getTime()) || !Number.isFinite(rightDate.getTime())) return left === right;
+  return isSameLocalDay(leftDate, rightDate);
+}
+
+function findOpenTask(tasks: Task[], title: string, dueAt?: string) {
+  return tasks.find(
+    (task) =>
+      task.status !== "done" &&
+      task.status !== "cancelled" &&
+      similar(task.title, title) &&
+      sameDueWindow(task.dueAt, dueAt)
+  );
+}
+
+function findSimilarLifeEvent(
+  state: AssistantState,
+  action: Extract<InterpretAction, { type: "add_life_event" }>
+) {
+  return state.lifeEvents.find((event) => {
+    if (event.status === "cancelled") return false;
+    const sameTitleOrPlace = similar(event.title, action.title) || Boolean(action.location && event.location && similar(event.location, action.location));
+    if (!sameTitleOrPlace) return false;
+    if (!event.startsAt || !action.startsAt) return true;
+    return isSameLocalDay(new Date(event.startsAt), new Date(action.startsAt));
+  });
+}
+
+function findSimilarCheckIn(
+  checkIns: AssistantCheckIn[],
+  title: string,
+  question: string,
+  relatedType: AssistantCheckIn["relatedType"],
+  relatedId: string
+) {
+  return checkIns.find(
+    (checkIn) =>
+      checkIn.status !== "dismissed" &&
+      checkIn.relatedType === relatedType &&
+      checkIn.relatedId === relatedId &&
+      (similar(checkIn.question, question) || similar(checkIn.title, title))
+  );
 }
 
 function upsertRecurrence(candidates: RecurrenceCandidate[], normalizedTitle: string, relatedType: RecurrenceCandidate["relatedType"]) {
@@ -133,13 +180,14 @@ function addShoppingItem(
   const now = nowIso();
   const existing = state.shoppingItems.find((item) => similar(item.itemName, action.itemName) && item.status !== "removed");
   const itemId = existing?.id ?? createId("shop");
+  const nextStatus = action.status ?? (existing?.status === "bought" ? "needed" : existing?.status ?? "needed");
   const newItem: ShoppingItem | undefined = existing
     ? undefined
     : {
         id: itemId,
         itemName: action.itemName,
         quantity: action.quantity,
-        status: action.status ?? "needed",
+        status: nextStatus,
         expectedAt: action.expectedAt,
         category: action.category ?? "household",
         createdAt: now,
@@ -150,11 +198,26 @@ function addShoppingItem(
 
   const recurrenceCandidates = upsertRecurrence(state.recurrenceCandidates, normalize(action.itemName), "shopping_item");
   const prompt = recurrencePrompt(recurrenceCandidates, action.itemName, itemId, state.checkIns);
-  const shouldCreateTask = action.createTask !== false && (action.status ?? "needed") === "needed";
+  const taskTitle = shoppingTaskTitle(action.itemName);
+  const shouldCreateTask = action.createTask !== false && nextStatus === "needed" && !findOpenTask(state.tasks, taskTitle, action.dueAt);
+  const shoppingItems = existing
+    ? state.shoppingItems.map((item) =>
+        item.id === existing.id
+          ? {
+              ...item,
+              quantity: action.quantity ?? item.quantity,
+              status: nextStatus,
+              expectedAt: action.expectedAt ?? item.expectedAt,
+              category: action.category ?? item.category,
+              updatedAt: now
+            }
+          : item
+      )
+    : [newItem!, ...state.shoppingItems];
 
   return {
     ...state,
-    shoppingItems: newItem ? [newItem, ...state.shoppingItems] : state.shoppingItems,
+    shoppingItems,
     tasks: shouldCreateTask ? [createShoppingTask(action.itemName, sourceInputId, action.dueAt), ...state.tasks] : state.tasks,
     checkIns: prompt ? [prompt, ...state.checkIns] : state.checkIns,
     recurrenceCandidates
@@ -229,6 +292,11 @@ export function applyInterpretation(
 
   interpretation.actions.forEach((action) => {
     if (action.type === "add_task") {
+      const existing = findOpenTask(next.tasks, action.title, action.dueAt);
+      if (existing) {
+        if (action.ref) refs[action.ref] = existing.id;
+        return;
+      }
       const task = createTaskFromAction(action, inputId);
       if (action.ref) refs[action.ref] = task.id;
       next = { ...next, tasks: [task, ...next.tasks] };
@@ -256,6 +324,27 @@ export function applyInterpretation(
     }
 
     if (action.type === "add_life_event") {
+      const existing = findSimilarLifeEvent(next, action);
+      if (existing) {
+        if (action.ref) refs[action.ref] = existing.id;
+        next = {
+          ...next,
+          lifeEvents: next.lifeEvents.map((event) =>
+            event.id === existing.id
+              ? {
+                  ...event,
+                  description: action.description ?? event.description,
+                  startsAt: action.startsAt ?? event.startsAt,
+                  endsAt: action.endsAt ?? event.endsAt,
+                  location: action.location ?? event.location,
+                  priority: action.priority ?? event.priority,
+                  updatedAt: nowIso()
+                }
+              : event
+          )
+        };
+        return;
+      }
       const event = {
         id: createId("event"),
         title: action.title,
@@ -277,6 +366,11 @@ export function applyInterpretation(
     }
 
     if (action.type === "add_check_in") {
+      const relatedType = action.relatedType ?? "project";
+      const relatedId = action.relatedId ?? (action.relatedRef ? refs[action.relatedRef] : undefined) ?? "assistant";
+      if (findSimilarCheckIn(next.checkIns, action.title, action.question, relatedType, relatedId)) {
+        return;
+      }
       next = {
         ...next,
         checkIns: [
@@ -284,8 +378,8 @@ export function applyInterpretation(
             id: createId("check"),
             title: action.title,
             question: action.question,
-            relatedType: action.relatedType ?? "project",
-            relatedId: action.relatedId ?? (action.relatedRef ? refs[action.relatedRef] : undefined) ?? "assistant",
+            relatedType,
+            relatedId,
             askAt: action.askAt ?? nowIso(),
             status: "pending",
             createdAt: nowIso()

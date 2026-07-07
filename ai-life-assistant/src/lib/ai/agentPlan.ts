@@ -1,6 +1,7 @@
 import { normalizeAiInterpretation, type AiInterpretation, type InterpretAction } from "@/lib/ai/interpretation";
 import { defaultAgentPlanLanguageModel, isAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { selectRelevantMemories } from "@/lib/memory/selectRelevantMemories";
+import { DEFAULT_TIMEZONE } from "@/lib/time/parseTime";
 import type { AiProcessingUpdate, AssistantState, MemoryContext, TranscriptRepair } from "@/types/domain";
 
 export type AgentPlanChatCompletionResponse = {
@@ -153,6 +154,7 @@ ${ACTION_SCHEMA}
 - 如果发现新的长期事实、偏好、重复模式或未闭环事项，请输出 memoryWrites。只保存未来有行动价值的记忆，不要保存流水账。
 - recurring、自动提醒偏好、家庭习惯、出行习惯、天气提醒偏好默认 requiresConfirmation: true。
 - 低风险且明确的事实可以 requiresConfirmation: false，例如“用户家里有多个孩子”，但 summary 仍要简洁。
+- memoryContext.pendingConfirmations 里的内容尚未经过用户确认，不能当作事实使用；只可用于避免重复提出同一条记忆确认。
 - feedback.detail 要概括本次识别出的事项数量或主要类型，避免只提其中一个事项。
 - 如果 payload.validation.errors 存在，说明上一轮 JSON 没有通过本地完整性校验；必须修正 errors 指出的缺失，并把修正写进 actions，不要只修改 feedback 文案。
 - 不要输出 id，后端会生成。
@@ -194,6 +196,14 @@ function configured() {
     process.env.AI_PARSE_ENABLED !== "false" &&
     Boolean(process.env.ARK_AGENT_PLAN_API_KEY)
   );
+}
+
+function runtimeTimezone() {
+  return process.env.ASSISTANT_TIMEZONE || DEFAULT_TIMEZONE;
+}
+
+function timezoneForState(state: AssistantState) {
+  return state.preferences.timezone || runtimeTimezone();
 }
 
 function endpoint() {
@@ -474,8 +484,8 @@ export async function repairTranscriptWithAgentPlan({
     systemPrompt: TRANSCRIPT_REPAIR_PROMPT,
     payload: {
       now: new Date().toISOString(),
-      localNow: localNowText(),
-      timezone: "Asia/Shanghai",
+      localNow: localNowText(runtimeTimezone()),
+      timezone: runtimeTimezone(),
       rawTranscript: trimmed
     },
     temperature: 0,
@@ -846,9 +856,9 @@ export async function requestAgentPlanChatCompletion(
   return JSON.parse(text) as AgentPlanChatCompletionResponse;
 }
 
-function localNowText() {
+function localNowText(timezone = DEFAULT_TIMEZONE) {
   return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
+    timeZone: timezone,
     dateStyle: "full",
     timeStyle: "medium"
   }).format(new Date());
@@ -860,6 +870,7 @@ async function understandInputWithAgentPlan({
   state,
   model,
   now,
+  timezone,
   memoryContext
 }: {
   rawText: string;
@@ -867,6 +878,7 @@ async function understandInputWithAgentPlan({
   state: AssistantState;
   model: string;
   now: string;
+  timezone: string;
   memoryContext: MemoryContext;
 }) {
   return requestValidatedAgentPlanJson({
@@ -874,8 +886,8 @@ async function understandInputWithAgentPlan({
     systemPrompt: UNDERSTANDING_PROMPT,
     payload: {
       now,
-      localNow: localNowText(),
-      timezone: "Asia/Shanghai",
+      localNow: localNowText(timezone),
+      timezone,
       rawText,
       inputType,
       memoryContext,
@@ -893,12 +905,14 @@ async function checkCoverageWithAgentPlan({
   understanding,
   model,
   now,
+  timezone,
   memoryContext
 }: {
   rawText: string;
   understanding: IntentUnderstanding;
   model: string;
   now: string;
+  timezone: string;
   memoryContext: MemoryContext;
 }) {
   return requestValidatedAgentPlanJson({
@@ -906,8 +920,8 @@ async function checkCoverageWithAgentPlan({
     systemPrompt: COVERAGE_PROMPT,
     payload: {
       now,
-      localNow: localNowText(),
-      timezone: "Asia/Shanghai",
+      localNow: localNowText(timezone),
+      timezone,
       rawText,
       memoryContext,
       feedback: understanding.feedback,
@@ -930,6 +944,7 @@ async function planFinalActionsWithAgentPlan({
   coverage,
   model,
   now,
+  timezone,
   memoryContext
 }: {
   rawText: string;
@@ -939,12 +954,13 @@ async function planFinalActionsWithAgentPlan({
   coverage: CoverageReview;
   model: string;
   now: string;
+  timezone: string;
   memoryContext: MemoryContext;
 }) {
   const payload = {
     now,
-    localNow: localNowText(),
-    timezone: "Asia/Shanghai",
+    localNow: localNowText(timezone),
+    timezone,
     rawText,
     inputType,
     memoryContext,
@@ -997,6 +1013,7 @@ export async function interpretWithAgentPlan({
 
   const modelId = resolveAgentPlanLanguageModel(model);
   const now = new Date().toISOString();
+  const timezone = timezoneForState(state);
   const memoryContext = selectRelevantMemories(rawText, state);
   onProgress?.({
     stage: "understanding",
@@ -1010,6 +1027,7 @@ export async function interpretWithAgentPlan({
     state,
     model: modelId,
     now,
+    timezone,
     memoryContext
   });
   onProgress?.({
@@ -1025,7 +1043,7 @@ export async function interpretWithAgentPlan({
     title: "检查遗漏",
     detail: "正在确认没有漏掉前半句、日期或提醒。"
   });
-  const coverage = await checkCoverageWithAgentPlan({ rawText, understanding, model: modelId, now, memoryContext });
+  const coverage = await checkCoverageWithAgentPlan({ rawText, understanding, model: modelId, now, timezone, memoryContext });
   onProgress?.({
     stage: "coverage",
     status: coverage.coverage === "complete" ? "complete" : "attention",
@@ -1049,6 +1067,7 @@ export async function interpretWithAgentPlan({
     coverage,
     model: modelId,
     now,
+    timezone,
     memoryContext
   });
   onProgress?.({

@@ -28,32 +28,49 @@ const chineseWeekdayLabels = ["周日", "周一", "周二", "周三", "周四", 
 const chineseWeekdayPattern = /周[一二三四五六日天]|星期[一二三四五六日天]/g;
 const englishWeekdayPattern = /\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/g;
 
+export const DEFAULT_TIMEZONE = "Asia/Shanghai";
+
+export function resolveTimezone(timezone?: string) {
+  return timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || DEFAULT_TIMEZONE;
+}
+
 export function nowIso() {
   return new Date().toISOString();
 }
 
-export function formatTime(iso?: string) {
+export function formatTime(iso?: string, timezone?: string) {
   if (!iso) return undefined;
   return new Intl.DateTimeFormat(undefined, {
+    timeZone: resolveTimezone(timezone),
     hour: "numeric",
     minute: "2-digit"
   }).format(new Date(iso));
 }
 
-export function formatShortDate(iso?: string) {
+export function formatShortDate(iso?: string, timezone?: string) {
   if (!iso) return undefined;
   return new Intl.DateTimeFormat(undefined, {
+    timeZone: resolveTimezone(timezone),
     month: "short",
     day: "numeric"
   }).format(new Date(iso));
 }
 
-export function isSameLocalDay(a: Date, b: Date) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+function localDateKey(date: Date, timezone?: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: resolveTimezone(timezone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return `${year}-${month}-${day}`;
+}
+
+export function isSameLocalDay(a: Date, b: Date, timezone?: string) {
+  return localDateKey(a, timezone) === localDateKey(b, timezone);
 }
 
 export function startOfLocalDay(date: Date) {

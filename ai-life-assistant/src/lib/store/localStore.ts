@@ -11,7 +11,7 @@ import type {
   TranscriptRepair,
   UserPreferences
 } from "@/types/domain";
-import { nowIso } from "@/lib/time/parseTime";
+import { DEFAULT_TIMEZONE, nowIso } from "@/lib/time/parseTime";
 import { createId } from "@/lib/id";
 import { defaultAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { compactMemoryItems } from "@/lib/memory/compactMemoryItems";
@@ -20,6 +20,7 @@ const STORAGE_KEY = "ai-life-assistant-state-v1";
 const legacyDefaultLanguageModel = "doubao-seed-2.0-lite";
 const previousDefaultLanguageModel = "deepseek-v4-flash";
 const modelChoiceVersion = 2;
+const fallbackTimezone = DEFAULT_TIMEZONE;
 
 type LegacyUserPreferences = UserPreferences & {
   maxDailyTasks?: number;
@@ -55,8 +56,13 @@ function normalizePreferences(preferences: LegacyUserPreferences): UserPreferenc
   return {
     ...currentPreferences,
     languageModel: shouldUseCurrentDefault ? defaultAgentPlanLanguageModel : currentPreferences.languageModel,
-    modelChoiceVersion
+    modelChoiceVersion,
+    timezone: currentPreferences.timezone || detectTimezone()
   };
+}
+
+function detectTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || fallbackTimezone;
 }
 
 const travelPrepCategories = [
@@ -166,6 +172,7 @@ export function createDefaultState(): AssistantState {
       preferredLanguage: "zh",
       languageModel: defaultAgentPlanLanguageModel,
       modelChoiceVersion,
+      timezone: detectTimezone(),
       wakeTime: "07:30",
       sleepTime: "23:30",
       planningStyle: "balanced",
@@ -440,7 +447,9 @@ export function useAssistantStore() {
             memory.id === memoryId ? { ...memory, status: "active", confidence: Math.max(memory.confidence, 0.85), updatedAt: now } : memory
           ),
           checkIns: current.checkIns.map((checkIn) =>
-            checkIn.relatedId === memoryId && checkIn.status === "pending" ? { ...checkIn, status: "answered" } : checkIn
+            checkIn.relatedType === "memory" && checkIn.relatedId === memoryId && checkIn.status === "pending"
+              ? { ...checkIn, status: "answered" }
+              : checkIn
           )
         }));
       },
@@ -454,7 +463,9 @@ export function useAssistantStore() {
             memory.id === memoryId ? { ...memory, summary: nextSummary.slice(0, 100), status: "active", updatedAt: now } : memory
           ),
           checkIns: current.checkIns.map((checkIn) =>
-            checkIn.relatedId === memoryId && checkIn.status === "pending" ? { ...checkIn, status: "answered" } : checkIn
+            checkIn.relatedType === "memory" && checkIn.relatedId === memoryId && checkIn.status === "pending"
+              ? { ...checkIn, status: "answered" }
+              : checkIn
           )
         }));
       },
@@ -466,7 +477,9 @@ export function useAssistantStore() {
             memory.id === memoryId ? { ...memory, status: "rejected", updatedAt: now } : memory
           ),
           checkIns: current.checkIns.map((checkIn) =>
-            checkIn.relatedId === memoryId && checkIn.status === "pending" ? { ...checkIn, status: "dismissed" } : checkIn
+            checkIn.relatedType === "memory" && checkIn.relatedId === memoryId && checkIn.status === "pending"
+              ? { ...checkIn, status: "dismissed" }
+              : checkIn
           )
         }));
       },

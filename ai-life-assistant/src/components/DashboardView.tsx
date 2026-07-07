@@ -14,9 +14,9 @@ const priorityLabels: Record<Priority, string> = {
   low: "低优先级"
 };
 
-function dayLabel(iso: string) {
+function dayLabel(iso: string, timezone?: string) {
   const date = new Date(iso);
-  return isSameLocalDay(date, new Date()) ? "今天" : formatShortDate(iso);
+  return isSameLocalDay(date, new Date(), timezone) ? "今天" : formatShortDate(iso, timezone);
 }
 
 function priorityLabel(priority: Priority) {
@@ -67,6 +67,7 @@ export function DashboardView({
   const progressCount = dashboard.progress.total > 0 ? `${dashboard.progress.completed}/${dashboard.progress.total}` : "无事项";
   const titleId = useId();
   const progressId = useId();
+  const timezone = state?.preferences.timezone;
   const suggestedMemories = (state?.memoryItems ?? []).filter((memory) => memory.status === "suggested").slice(0, 3);
   const suggestedMemoryIds = new Set(suggestedMemories.map((memory) => memory.id));
   const openConfirmations = (state?.checkIns ?? [])
@@ -183,9 +184,9 @@ export function DashboardView({
                           <div className="related-reminder-main">
                             <span>{reminder.title}</span>
                             <small>
-                              {dayLabel(reminder.askAt)}
+                              {dayLabel(reminder.askAt, timezone)}
                               {" · "}
-                              {formatTime(reminder.askAt)}
+                              {formatTime(reminder.askAt, timezone)}
                               {reminder.status === "answered" ? " · 已完成" : ""}
                             </small>
                             <p>{reminder.question}</p>
@@ -244,9 +245,9 @@ export function DashboardView({
                   <div className="memory-main">
                     <p>{checkIn.question}</p>
                     <small>
-                      {dayLabel(checkIn.askAt)}
+                      {dayLabel(checkIn.askAt, timezone)}
                       {" · "}
-                      {formatTime(checkIn.askAt)}
+                      {formatTime(checkIn.askAt, timezone)}
                     </small>
                   </div>
                   <ItemActionButtons

@@ -41,7 +41,7 @@ function createConfirmation(memory: MemoryItem): AssistantCheckIn {
     id: createId("check"),
     title: "确认长期记忆",
     question: `要不要让我记住：${memory.summary}`,
-    relatedType: "project",
+    relatedType: "memory",
     relatedId: memory.id,
     askAt: now,
     status: "pending",
@@ -125,7 +125,9 @@ export function applyMemoryWrites(state: AssistantState, writes: MemoryWrite[] =
         updatedAt: now
       };
       const updated = memoryItems[existingIndex];
-      const shouldAsk = updated.status === "suggested" && !checkIns.some((checkIn) => checkIn.relatedId === updated.id && checkIn.status === "pending");
+      const shouldAsk =
+        updated.status === "suggested" &&
+        !checkIns.some((checkIn) => checkIn.relatedType === "memory" && checkIn.relatedId === updated.id && checkIn.status === "pending");
       if (shouldAsk) checkIns.unshift(createConfirmation(updated));
       return;
     }

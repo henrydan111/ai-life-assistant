@@ -57,15 +57,15 @@ const horizonCards = [
   }
 ] as const;
 
-function relativeDay(date: Date, today: Date) {
-  if (isSameLocalDay(date, today)) return "今天";
-  if (isSameLocalDay(date, addDays(today, 1))) return "明天";
-  return formatShortDate(date.toISOString()) ?? "";
+function relativeDay(date: Date, today: Date, timezone?: string) {
+  if (isSameLocalDay(date, today, timezone)) return "今天";
+  if (isSameLocalDay(date, addDays(today, 1), timezone)) return "明天";
+  return formatShortDate(date.toISOString(), timezone) ?? "";
 }
 
-function rangeLabel(start: Date, end: Date) {
-  const startText = formatShortDate(start.toISOString());
-  const endText = formatShortDate(addDays(end, -1).toISOString());
+function rangeLabel(start: Date, end: Date, timezone?: string) {
+  const startText = formatShortDate(start.toISOString(), timezone);
+  const endText = formatShortDate(addDays(end, -1).toISOString(), timezone);
   return startText === endText ? startText : `${startText} - ${endText}`;
 }
 
@@ -78,6 +78,7 @@ function hasRelatedRecord(state: AssistantState, kind: string, id: string) {
   if (kind === "life_event") return state.lifeEvents.some((event) => event.id === id && event.status !== "cancelled");
   if (kind === "shopping_item") return state.shoppingItems.some((item) => item.id === id && item.status !== "removed");
   if (kind === "project") return state.projects.some((project) => project.id === id && project.status !== "done");
+  if (kind === "memory") return state.memoryItems.some((memory) => memory.id === id && memory.status === "suggested");
   return false;
 }
 
@@ -180,6 +181,7 @@ export function CalendarView({
   onRevertItem: (target: AssistantItemRef) => void;
 }) {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+  const timezone = state.preferences.timezone;
   const today = startOfLocalDay(new Date());
   const items = buildCalendarItems(state, new Set(hiddenTaskIds ?? []));
   const titleId = useId();
@@ -218,7 +220,7 @@ export function CalendarView({
                 </div>
                 <span aria-label={`${cardItems.length} scheduled items`}>{cardItems.length}</span>
               </div>
-              <div className="horizon-range">{rangeLabel(start, end)}</div>
+              <div className="horizon-range">{rangeLabel(start, end, timezone)}</div>
               <ul className="horizon-items" aria-label={`${card.title}安排`}>
                 {cardItems.length ? (
                   cardItems.slice(0, 4).map((item) => {
@@ -247,9 +249,9 @@ export function CalendarView({
                           <div className="horizon-item-main">
                             <span>{item.title}</span>
                             <small>
-                              {relativeDay(item.at, today)}
+                              {relativeDay(item.at, today, timezone)}
                               {" · "}
-                              {formatTime(item.at.toISOString())}
+                              {formatTime(item.at.toISOString(), timezone)}
                               {item.meta ? (
                                 <>
                                   {" · "}
@@ -279,9 +281,9 @@ export function CalendarView({
                                 <div className="related-reminder-main">
                                   <span>{reminder.title}</span>
                                   <small>
-                                    {relativeDay(reminder.at, today)}
+                                    {relativeDay(reminder.at, today, timezone)}
                                     {" · "}
-                                    {formatTime(reminder.at.toISOString())}
+                                    {formatTime(reminder.at.toISOString(), timezone)}
                                     {reminder.status === "answered" ? " · 已完成" : ""}
                                   </small>
                                   <p>{reminder.question}</p>

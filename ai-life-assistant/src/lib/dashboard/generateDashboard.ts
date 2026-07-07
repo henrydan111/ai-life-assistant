@@ -13,20 +13,21 @@ function promptIsDue(prompt: AssistantCheckIn) {
   return prompt.status === "pending" && new Date(prompt.askAt).getTime() <= Date.now();
 }
 
-function belongsToToday(task: Task, today: Date) {
+function belongsToToday(task: Task, today: Date, timezone: string) {
   if (task.horizon === "now" || task.horizon === "today") return true;
-  if (task.dueAt && isSameLocalDay(new Date(task.dueAt), today)) return true;
-  if (task.status === "done" && isSameLocalDay(new Date(task.updatedAt), today)) return true;
+  if (task.dueAt && isSameLocalDay(new Date(task.dueAt), today, timezone)) return true;
+  if (task.status === "done" && isSameLocalDay(new Date(task.updatedAt), today, timezone)) return true;
   return false;
 }
 
 export function generateDashboard(state: AssistantState): DashboardData {
   const today = new Date();
+  const timezone = state.preferences.timezone;
   const latestMood = state.moodLogs[0];
 
   const todayTaskPool = state.tasks.filter((task) => {
     if (task.status === "cancelled" || task.status === "deferred") return false;
-    return belongsToToday(task, today);
+    return belongsToToday(task, today, timezone);
   });
 
   const todayTasks = todayTaskPool.filter((task) => task.status === "todo" || task.status === "doing").sort(sortTasks);
@@ -45,14 +46,14 @@ export function generateDashboard(state: AssistantState): DashboardData {
           id: nowTask.id,
           title: nowTask.title,
           reason: nowTask.dueAt ? "Highest-priority deadline today" : "Best next action",
-          due: formatTime(nowTask.dueAt)
+          due: formatTime(nowTask.dueAt, timezone)
         }
       : undefined,
     today: todayTasks.map((task) => ({
       id: task.id,
       title: task.title,
       status: task.status,
-      due: formatTime(task.dueAt),
+      due: formatTime(task.dueAt, timezone),
       priority: task.priority
     })),
     progress: {

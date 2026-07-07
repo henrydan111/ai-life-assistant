@@ -21,21 +21,29 @@ const priorityLabels = {
   low: "低优先级"
 } as const;
 
-function dayKey(date: Date) {
+function dayKey(date: Date, timezone?: string) {
+  if (timezone) {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(date);
+  }
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
-function dayLabel(iso: string) {
+function dayLabel(iso: string, timezone?: string) {
   const date = new Date(iso);
-  return isSameLocalDay(date, new Date()) ? "今天" : formatShortDate(iso);
+  return isSameLocalDay(date, new Date(), timezone) ? "今天" : formatShortDate(iso, timezone);
 }
 
-function weekdayLabel(date: Date) {
-  if (isSameLocalDay(date, new Date())) return "今天";
-  return new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(date);
+function weekdayLabel(date: Date, timezone?: string) {
+  if (isSameLocalDay(date, new Date(), timezone)) return "今天";
+  return new Intl.DateTimeFormat("zh-CN", { timeZone: timezone, weekday: "short" }).format(date);
 }
 
 function visibleRelatedReminders(
@@ -93,10 +101,11 @@ function dateForTask(task: AssistantState["tasks"][number], today: Date) {
 }
 
 function buildDailyTracker(state: AssistantState) {
+  const timezone = state.preferences.timezone;
   const today = startOfLocalDay(new Date());
   const days = Array.from({ length: 7 }, (_, index) => {
     const date = addDays(today, index);
-    return { date, key: dayKey(date), total: 0, completed: 0 };
+    return { date, key: dayKey(date, timezone), total: 0, completed: 0 };
   });
   const byKey = new Map(days.map((day) => [day.key, day]));
 
@@ -104,7 +113,7 @@ function buildDailyTracker(state: AssistantState) {
     if (task.status === "cancelled" || task.status === "deferred") return;
     const date = dateForTask(task, today);
     if (!date) return;
-    const bucket = byKey.get(dayKey(date));
+    const bucket = byKey.get(dayKey(date, timezone));
     if (!bucket) return;
     bucket.total += 1;
     if (task.status === "done") bucket.completed += 1;
@@ -114,7 +123,7 @@ function buildDailyTracker(state: AssistantState) {
     if (event.status === "cancelled") return;
     const date = event.startsAt ? new Date(event.startsAt) : event.status === "done" ? new Date(event.updatedAt) : undefined;
     if (!date) return;
-    const bucket = byKey.get(dayKey(date));
+    const bucket = byKey.get(dayKey(date, timezone));
     if (!bucket) return;
     bucket.total += 1;
     if (event.status === "done") bucket.completed += 1;
@@ -124,7 +133,7 @@ function buildDailyTracker(state: AssistantState) {
     if (item.status === "removed") return;
     const date = item.expectedAt ? new Date(item.expectedAt) : item.status === "bought" ? new Date(item.updatedAt) : undefined;
     if (!date) return;
-    const bucket = byKey.get(dayKey(date));
+    const bucket = byKey.get(dayKey(date, timezone));
     if (!bucket) return;
     bucket.total += 1;
     if (item.status === "bought") bucket.completed += 1;
@@ -143,6 +152,7 @@ export function TrackerCard({
   onRevertItem: (target: AssistantItemRef) => void;
 }) {
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+  const timezone = state.preferences.timezone;
   const tracker = buildDailyTracker(state);
   const completed = completedMainItems(state);
   const maxTotal = Math.max(1, ...tracker.map((day) => day.total));
@@ -178,8 +188,8 @@ export function TrackerCard({
                   <div className="daily-tracker-bar" style={{ height: `${barHeight}px` }} />
                 </div>
                 <div className="daily-tracker-label">
-                  <span>{weekdayLabel(day.date)}</span>
-                  <small>{formatShortDate(day.date.toISOString())}</small>
+                  <span>{weekdayLabel(day.date, timezone)}</span>
+                  <small>{formatShortDate(day.date.toISOString(), timezone)}</small>
                 </div>
               </div>
             );
@@ -220,9 +230,9 @@ export function TrackerCard({
                     <div className="completed-main-text">
                       <span>{item.title}</span>
                       <small>
-                        {dayLabel(item.completedAt)}
+                        {dayLabel(item.completedAt, timezone)}
                         {" · "}
-                        {formatTime(item.completedAt)}
+                        {formatTime(item.completedAt, timezone)}
                         {item.meta ? ` · ${item.meta}` : ""}
                         {item.reminders.length ? ` · ${item.reminders.length}个提醒` : ""}
                       </small>
@@ -239,9 +249,9 @@ export function TrackerCard({
                           <div className="related-reminder-main">
                             <span>{reminder.title}</span>
                             <small>
-                              {dayLabel(reminder.askAt)}
+                              {dayLabel(reminder.askAt, timezone)}
                               {" · "}
-                              {formatTime(reminder.askAt)}
+                              {formatTime(reminder.askAt, timezone)}
                               {reminder.status === "answered" ? " · 已完成" : ""}
                             </small>
                             <p>{reminder.question}</p>

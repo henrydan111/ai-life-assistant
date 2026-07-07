@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
+import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { AiProcessingUpdate, AssistantState, TranscriptRepair } from "@/types/domain";
 
 export const runtime = "nodejs";
@@ -64,14 +65,27 @@ export async function POST(request: Request) {
         if (!canUseAgentPlan()) {
           sendProgress({
             stage: "saving",
-            status: "error",
-            title: "处理失败",
-            detail: "AI 解析服务未配置，无法保存这次输入。"
+            status: "attention",
+            title: "先帮你记下",
+            detail: "AI 深度整理暂时不可用，我会用本地方式先保存。"
+          });
+          const result = parseLocalInput(rawText, state, inputType);
+          sendProgress({
+            stage: "saving",
+            status: "complete",
+            title: "已保存",
+            detail: result.feedback.detail
+          });
+          sendProgress({
+            stage: "done",
+            status: "complete",
+            title: "整理完成",
+            detail: result.feedback.detail
           });
           streamLine(controller, encoder, {
             type: "result",
-            provider: "volcengine_agent_plan_runtime",
-            error: "AI 解析服务未配置，无法保存这次输入。"
+            ...result,
+            provider: "local_parser_fallback"
           });
           return;
         }
