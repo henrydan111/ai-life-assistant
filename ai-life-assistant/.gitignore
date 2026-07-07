@@ -6,3 +6,4 @@ tsconfig.tsbuildinfo
 .env.local
 .env.*.local
 *.log
+eval-results/

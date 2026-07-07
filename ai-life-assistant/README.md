@@ -43,6 +43,22 @@ The app sends natural-language interpretation requests through the backend route
 
 Voice input records audio in the browser and sends it to `/api/ai/asr`. Voice playback sends text to `/api/ai/tts`, which uses the Agent Plan HTTP TTS endpoint. Browser-native speech is kept only as a local fallback when the Agent Plan speech route is unavailable.
 
+## Evaluation
+
+Deterministic regression checks:
+
+```bash
+pnpm run eval:regression
+```
+
+Live Agent Plan checks that call the configured AI runtime:
+
+```bash
+pnpm run eval:agent-plan:smoke
+```
+
+See `docs/eval-framework.md` for scenario filters, reports, and full-suite usage.
+
 ## POC Limits
 
 - No auth yet.
