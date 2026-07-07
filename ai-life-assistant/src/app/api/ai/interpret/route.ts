@@ -15,6 +15,8 @@ type InterpretRequest = {
   inputType?: "text" | "voice";
   model?: string;
   state?: AssistantState;
+  clientRequestId?: string;
+  baseRevision?: number;
 };
 
 function isValidRequest(body: unknown): body is InterpretRequest {
@@ -26,6 +28,13 @@ function mergeFeedback(confirmation: ParseFeedback, next: ParseFeedback): ParseF
     title: "已更新确认信息，也整理了新事项",
     detail: [confirmation.detail, next.detail].filter(Boolean).join(" "),
     question: next.question ?? confirmation.question
+  };
+}
+
+function requestMeta(body: InterpretRequest) {
+  return {
+    clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : undefined,
+    baseRevision: typeof body.baseRevision === "number" ? body.baseRevision : undefined
   };
 }
 
@@ -43,6 +52,7 @@ export async function POST(request: Request) {
   }
 
   const inputType = body.inputType === "voice" ? "voice" : "text";
+  const meta = requestMeta(body);
   const confirmation = resolvePendingConfirmations(body.rawText, inputType, body.state, {
     originalText: body.originalText,
     transcriptRepair: body.transcriptRepair
@@ -50,6 +60,7 @@ export async function POST(request: Request) {
   if (confirmation && !confirmation.unhandledText) {
     return NextResponse.json({
       ...confirmation,
+      ...meta,
       provider: "local_confirmation_resolver"
     });
   }
@@ -67,6 +78,7 @@ export async function POST(request: Request) {
     const result = parseLocalInput(planningText, planningState, inputType, planningInputOptions);
     return NextResponse.json({
       ...result,
+      ...meta,
       feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
       provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
     });
@@ -86,6 +98,7 @@ export async function POST(request: Request) {
     });
     return NextResponse.json({
       ...result,
+      ...meta,
       feedback: confirmation ? mergeFeedback(confirmation.feedback, result.feedback) : result.feedback,
       provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
       model: resolveAgentPlanLanguageModel(body.model)
@@ -95,6 +108,7 @@ export async function POST(request: Request) {
     if (confirmation) {
       return NextResponse.json({
         ...confirmation,
+        ...meta,
         feedback: {
           title: "已更新确认信息",
           detail: `${confirmation.feedback.detail} 另外一句我没有安全保存，先没有修改。`
@@ -102,6 +116,6 @@ export async function POST(request: Request) {
         provider: "local_confirmation_resolver"
       });
     }
-    return NextResponse.json(buildSafePlanningFailureResult(body.state, body.model));
+    return NextResponse.json({ ...buildSafePlanningFailureResult(body.state, body.model), ...meta });
   }
 }

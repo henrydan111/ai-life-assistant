@@ -15,7 +15,12 @@ const { actionText } = jiti("../src/lib/ai/agentPlan/actionText.ts");
 const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWithTrace } = jiti("../src/lib/ai/agentPlan/postProcess.ts");
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
-const { safePlanningFailureProvider, shouldSkipInterpretStateUpdate } = jiti("../src/lib/store/interpretResult.ts");
+const {
+  buildStaleInterpretResultFeedback,
+  isStaleInterpretResult,
+  safePlanningFailureProvider,
+  shouldSkipInterpretStateUpdate
+} = jiti("../src/lib/store/interpretResult.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
@@ -692,6 +697,18 @@ const evals = [
       assert.doesNotMatch(result.feedback.title, /validation|schema|failed/i);
       assert.doesNotMatch(result.feedback.detail, /validation|schema|failed|actions\[/i);
       assertFeedbackStateConsistency(state, result.state, result.feedback);
+    }
+  },
+  {
+    name: "stale interpretation results are detected before overwriting state",
+    run() {
+      assert.equal(isStaleInterpretResult({ baseRevision: 3 }, 3), false);
+      assert.equal(isStaleInterpretResult({ baseRevision: 3 }, 4), true);
+      assert.equal(isStaleInterpretResult({}, 4, 3), true);
+      assert.equal(isStaleInterpretResult({}, 3, 3), false);
+
+      const feedback = buildStaleInterpretResultFeedback();
+      assert.match(`${feedback.title} ${feedback.detail}`, /没有覆盖|较早的状态|避免覆盖/);
     }
   },
   {

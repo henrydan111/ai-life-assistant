@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import type {
   AiProcessingUpdate,
   AssistantItemRef,
@@ -15,7 +15,12 @@ import { DEFAULT_TIMEZONE, nowIso } from "@/lib/time/parseTime";
 import { createId } from "@/lib/id";
 import { defaultAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { compactMemoryItems } from "@/lib/memory/compactMemoryItems";
-import { shouldSkipInterpretStateUpdate, type InterpretResult } from "@/lib/store/interpretResult";
+import {
+  buildStaleInterpretResultFeedback,
+  isStaleInterpretResult,
+  shouldSkipInterpretStateUpdate,
+  type InterpretResult
+} from "@/lib/store/interpretResult";
 
 const STORAGE_KEY = "ai-life-assistant-state-v1";
 const legacyDefaultLanguageModel = "doubao-seed-2.0-lite";
@@ -35,6 +40,11 @@ type LegacyAssistantState = AssistantState & {
 type SubmitInputOptions = {
   originalText?: string;
   transcriptRepair?: TranscriptRepair;
+};
+
+type RequestRevision = {
+  clientRequestId: string;
+  baseRevision: number;
 };
 
 type ProgressReporter = (update: AiProcessingUpdate) => void;
@@ -273,6 +283,7 @@ async function submitInputWithProgress(
   inputType: "text" | "voice",
   state: AssistantState,
   onProgress: ProgressReporter,
+  revision: RequestRevision,
   options: SubmitInputOptions = {}
 ) {
   const response = await fetch("/api/ai/interpret-stream", {
@@ -284,7 +295,9 @@ async function submitInputWithProgress(
       transcriptRepair: options.transcriptRepair,
       inputType,
       state,
-      model: state.preferences.languageModel
+      model: state.preferences.languageModel,
+      clientRequestId: revision.clientRequestId,
+      baseRevision: revision.baseRevision
     })
   });
 
@@ -343,8 +356,17 @@ async function submitInputWithProgress(
 }
 
 export function useAssistantStore() {
-  const [state, setState] = useState<AssistantState>(() => createDefaultState());
+  const [state, setRawState] = useState<AssistantState>(() => createDefaultState());
   const [hydrated, setHydrated] = useState(false);
+  const revisionRef = useRef(0);
+
+  const setState = useCallback((nextState: SetStateAction<AssistantState>) => {
+    setRawState((current) => {
+      const next = typeof nextState === "function" ? (nextState as (current: AssistantState) => AssistantState)(current) : nextState;
+      if (next !== current) revisionRef.current += 1;
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setState(loadAssistantState());
@@ -363,10 +385,17 @@ export function useAssistantStore() {
         onProgress?: ProgressReporter,
         options: SubmitInputOptions = {}
       ) {
+        const revision: RequestRevision = {
+          clientRequestId: createId("request"),
+          baseRevision: revisionRef.current
+        };
         if (onProgress) {
-          const result = await submitInputWithProgress(rawText, inputType, state, onProgress, options);
+          const result = await submitInputWithProgress(rawText, inputType, state, onProgress, revision, options);
           if (!shouldSkipInterpretStateUpdate(result)) {
             if (!result.state) throw new Error("AI interpretation result did not include state.");
+            if (isStaleInterpretResult(result, revisionRef.current, revision.baseRevision)) {
+              return buildStaleInterpretResultFeedback();
+            }
             setState(normalizeAssistantState(result.state));
           }
           return result.feedback;
@@ -381,7 +410,9 @@ export function useAssistantStore() {
             transcriptRepair: options.transcriptRepair,
             inputType,
             state,
-            model: state.preferences.languageModel
+            model: state.preferences.languageModel,
+            clientRequestId: revision.clientRequestId,
+            baseRevision: revision.baseRevision
           })
         });
         const result = (await response.json()) as InterpretResult;
@@ -391,6 +422,9 @@ export function useAssistantStore() {
         }
         if (!skipStateUpdate) {
           if (!result.state) throw new Error("AI interpretation result did not include state.");
+          if (isStaleInterpretResult(result, revisionRef.current, revision.baseRevision)) {
+            return buildStaleInterpretResultFeedback();
+          }
           setState(normalizeAssistantState(result.state));
         }
         return result.feedback;
@@ -633,6 +667,10 @@ export function useAssistantStore() {
         rawText: string,
         inputType: "text" | "voice" = "text"
       ): Promise<ParseFeedback> {
+        const revision: RequestRevision = {
+          clientRequestId: createId("request"),
+          baseRevision: revisionRef.current
+        };
         const response = await fetch("/api/ai/update-item", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -641,6 +679,9 @@ export function useAssistantStore() {
         const result = (await response.json()) as { state?: AssistantState; feedback?: ParseFeedback; error?: string };
         if (!response.ok || !result.state || !result.feedback) {
           throw new Error(result.error ?? "AI item update failed.");
+        }
+        if (isStaleInterpretResult({}, revisionRef.current, revision.baseRevision)) {
+          return buildStaleInterpretResultFeedback();
         }
         setState(normalizeAssistantState(result.state));
         return result.feedback;

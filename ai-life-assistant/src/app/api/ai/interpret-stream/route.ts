@@ -16,6 +16,8 @@ type InterpretRequest = {
   inputType?: "text" | "voice";
   model?: string;
   state?: AssistantState;
+  clientRequestId?: string;
+  baseRevision?: number;
 };
 
 type StreamMessage =
@@ -38,6 +40,13 @@ function mergeFeedback(confirmation: ParseFeedback, next: ParseFeedback): ParseF
   };
 }
 
+function requestMeta(body: InterpretRequest) {
+  return {
+    clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : undefined,
+    baseRevision: typeof body.baseRevision === "number" ? body.baseRevision : undefined
+  };
+}
+
 export async function POST(request: Request) {
   let body: unknown;
 
@@ -57,6 +66,7 @@ export async function POST(request: Request) {
   const state = body.state;
   const model = body.model;
   const inputType = body.inputType === "voice" ? "voice" : "text";
+  const meta = requestMeta(body);
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -92,6 +102,7 @@ export async function POST(request: Request) {
           streamLine(controller, encoder, {
             type: "result",
             ...confirmation,
+            ...meta,
             provider: "local_confirmation_resolver"
           });
           return;
@@ -130,6 +141,7 @@ export async function POST(request: Request) {
           streamLine(controller, encoder, {
             type: "result",
             ...result,
+            ...meta,
             feedback,
             provider: confirmation ? "local_confirmation_resolver+local_parser_fallback" : "local_parser_fallback"
           });
@@ -170,6 +182,7 @@ export async function POST(request: Request) {
         });
         streamLine(controller, encoder, {
           ...result,
+          ...meta,
           feedback,
           type: "result",
           provider: confirmation ? "local_confirmation_resolver+volcengine_agent_plan_runtime" : "volcengine_agent_plan_runtime",
@@ -193,6 +206,7 @@ export async function POST(request: Request) {
           });
           streamLine(controller, encoder, {
             ...result,
+            ...meta,
             type: "result",
             provider: "local_confirmation_resolver"
           });
@@ -213,6 +227,7 @@ export async function POST(request: Request) {
         });
         streamLine(controller, encoder, {
           ...result,
+          ...meta,
           type: "result",
           provider: result.provider,
           model: result.model

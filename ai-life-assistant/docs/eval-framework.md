@@ -118,6 +118,7 @@ Reports include:
 - memory writes
 - applied final state summary
 - dashboard-visible final snapshot
+- request metadata echo for `clientRequestId` / `baseRevision`
 - per-expectation failure details
 
 `eval-results/` is ignored by Git because reports may contain user-like scenario text and model outputs.

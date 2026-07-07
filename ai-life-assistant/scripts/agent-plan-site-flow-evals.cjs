@@ -468,6 +468,8 @@ async function postStream({ baseUrl, rawText, state, inputType = "text" }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
   const progress = [];
+  const clientRequestId = `site-flow-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const baseRevision = 0;
   try {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/ai/interpret-stream`, {
       method: "POST",
@@ -476,7 +478,9 @@ async function postStream({ baseUrl, rawText, state, inputType = "text" }) {
         rawText,
         inputType,
         state,
-        model: state.preferences.languageModel
+        model: state.preferences.languageModel,
+        clientRequestId,
+        baseRevision
       }),
       signal: controller.signal
     });
@@ -521,7 +525,7 @@ async function postStream({ baseUrl, rawText, state, inputType = "text" }) {
 
     if (!result && error) throw new Error(error);
     if (!result) throw new Error("interpret-stream finished without a result.");
-    return { result, progress };
+    return { result, progress, clientRequestId, baseRevision };
   } finally {
     clearTimeout(timeout);
   }
@@ -532,7 +536,7 @@ async function runStep({ baseUrl, scenario, step, state, repeatIndex, stepIndex 
   const before = state;
   const stepLabel = `${scenario.id}#${stepIndex + 1}${repeatIndex > 0 ? `/repeat${repeatIndex + 1}` : ""}`;
   try {
-    const { result, progress } = await postStream({ baseUrl, rawText: step.rawText, state, inputType: step.inputType ?? "text" });
+    const { result, progress, clientRequestId, baseRevision } = await postStream({ baseUrl, rawText: step.rawText, state, inputType: step.inputType ?? "text" });
     const after = shouldSkipInterpretStateUpdate(result) ? before : normalizeAssistantState(result.state);
     const feedback = result.feedback;
     const dashboard = generateVisibleDashboardSnapshot(after);
@@ -562,6 +566,9 @@ async function runStep({ baseUrl, scenario, step, state, repeatIndex, stepIndex 
         feedback,
         provider: result.provider,
         model: result.model,
+        clientRequestId: result.clientRequestId,
+        baseRevision: result.baseRevision,
+        requestEchoed: result.clientRequestId === clientRequestId && result.baseRevision === baseRevision,
         safeFailure: result.safeFailure,
         stateUnchanged: result.stateUnchanged,
         progress: progress.map((item) => ({ stage: item.stage, status: item.status, title: item.title })),
