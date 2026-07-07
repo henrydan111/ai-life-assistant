@@ -300,6 +300,52 @@ function removeUnsupportedCoarseWeekendTravelTimes(rawText: string, interpretati
   return { ...interpretation, actions };
 }
 
+function hasUnsafeMilkReminderQuestion(rawText: string, question: string) {
+  return /牛奶/.test(rawText) && !hasExplicitReminderTime(rawText, /牛奶/) && /(明天中午|明天.*中午|中午.*牛奶|牛奶.*中午)/.test(question);
+}
+
+function hasUnsafeCoarseWeekendTravelQuestion(rawText: string, question: string) {
+  return rawHasCoarseWeekendTravel(rawText) && /(202\d|20\d{2}|周日|星期日|周天|星期天|下午\s*2\s*点|14:00|明天中午)/.test(question);
+}
+
+function safeClarificationQuestions(actions: InterpretAction[]) {
+  return actions
+    .filter((action): action is Extract<InterpretAction, { type: "add_check_in" }> => action.type === "add_check_in")
+    .map((action) => action.question)
+    .filter((question) => question && !/(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|周日下午2点|14:00)/.test(question));
+}
+
+function sanitizeFeedbackQuestion(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
+  const question = interpretation.feedback.question;
+  if (!question) return interpretation;
+
+  const unsafe =
+    (isExplicitRecentSleepGoal(rawText) && isRedundantRoutineScopeCheckIn({
+      type: "add_check_in",
+      title: "feedback",
+      question,
+      relatedType: "routine_goal",
+      relatedRef: "feedback"
+    })) ||
+    hasUnsafeMilkReminderQuestion(rawText, question) ||
+    hasUnsafeCoarseWeekendTravelQuestion(rawText, question);
+  if (!unsafe) return interpretation;
+
+  const [replacement] = safeClarificationQuestions(interpretation.actions);
+  const feedback = {
+    ...interpretation.feedback,
+    question: replacement
+  };
+  trace.push({
+    rule: "feedback.repair.remove_unsafe_default_confirmation",
+    severity: "repair",
+    before: { question },
+    after: replacement ? { question: replacement } : { question: undefined },
+    reason: "Feedback should not ask the user to confirm invented defaults or restate explicit routine goals."
+  });
+  return { ...interpretation, feedback };
+}
+
 function normalizeRoutineGoalAction(
   rawText: string,
   action: Extract<InterpretAction, { type: "add_routine_goal" }>,
@@ -480,6 +526,7 @@ export function postProcessAgentPlanInterpretationWithTrace(
   next = ensureMentionedTravelPrepCheckIns(rawText, next);
   next = ensureLeaveBossCheckIn(rawText, next);
   next = repairExistingRelatedRefs(state, next);
+  next = sanitizeFeedbackQuestion(rawText, next, trace);
   return {
     interpretation: {
       ...next,

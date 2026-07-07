@@ -110,7 +110,7 @@ function findSimilarCheckIn(
 ) {
   return checkIns.find(
     (checkIn) =>
-      checkIn.status !== "dismissed" &&
+      checkIn.status === "pending" &&
       checkIn.relatedType === relatedType &&
       checkIn.relatedId === relatedId &&
       (similar(checkIn.question, question) || similar(checkIn.title, title))
