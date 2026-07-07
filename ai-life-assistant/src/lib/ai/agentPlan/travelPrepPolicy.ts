@@ -165,7 +165,8 @@ export function ensureMentionedTravelDraft(rawText: string, interpretation: AiIn
         title: /[\u4e00-\u9fa5]/.test(location) ? "确认出行时间" : "Confirm trip date",
         question: travelDateQuestion(rawText, location),
         relatedType: "life_event",
-        relatedRef: ref
+        relatedRef: ref,
+        clarification: { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" }
       },
       ...interpretation.actions
     ]

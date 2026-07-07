@@ -1,4 +1,4 @@
-import type { EnergyLevel, Horizon, LifeEvent, MemoryWrite, ParseFeedback, Priority, RoutineGoal, ShoppingItem, Task } from "@/types/domain";
+import type { AssistantCheckIn, EnergyLevel, Horizon, LifeEvent, MemoryWrite, ParseFeedback, Priority, RoutineGoal, ShoppingItem, Task } from "@/types/domain";
 import type { PlanTrace } from "@/lib/ai/agentPlan/types";
 
 export type InterpretAction =
@@ -66,6 +66,7 @@ export type InterpretAction =
       relatedType: "task" | "shopping_item" | "life_event" | "project" | "routine_goal";
       relatedRef?: string;
       relatedId?: string;
+      clarification?: AssistantCheckIn["clarification"];
       askAt?: string;
     }
   | {
@@ -113,6 +114,21 @@ const checkInRelatedTypes: Extract<InterpretAction, { type: "add_check_in" }>["r
   "life_event",
   "project",
   "routine_goal"
+];
+const clarificationSlots: NonNullable<AssistantCheckIn["clarification"]>["slot"][] = [
+  "life_event_time",
+  "routine_goal_scope",
+  "routine_goal_target_time"
+];
+const clarificationTargetFields: NonNullable<AssistantCheckIn["clarification"]>["targetField"][] = [
+  "startsAt",
+  "scope",
+  "targetTime"
+];
+const clarificationExpectedAnswerKinds: NonNullable<AssistantCheckIn["clarification"]>["expectedAnswerKind"][] = [
+  "date_time",
+  "choice",
+  "time"
 ];
 const memoryTypes: MemoryWrite["type"][] = [
   "household",
@@ -216,6 +232,31 @@ function optionalEnumField<T extends string>(
   if (typeof value === "string" && allowed.includes(value as T)) return value as T;
   errors.push(`${path}.${key} 必须是 ${allowed.join("|")}。`);
   return undefined;
+}
+
+function optionalClarificationField(
+  record: Record<string, unknown>,
+  key: string,
+  path: string,
+  errors: string[]
+): AssistantCheckIn["clarification"] {
+  const value = record[key];
+  if (!isPresent(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    errors.push(`${path}.${key} 必须是对象。`);
+    return undefined;
+  }
+  const object = value as Record<string, unknown>;
+  const slot = optionalEnumField(object, "slot", clarificationSlots, `${path}.${key}`, errors);
+  const targetField = optionalEnumField(object, "targetField", clarificationTargetFields, `${path}.${key}`, errors);
+  const expectedAnswerKind = optionalEnumField(
+    object,
+    "expectedAnswerKind",
+    clarificationExpectedAnswerKinds,
+    `${path}.${key}`,
+    errors
+  );
+  return slot && targetField && expectedAnswerKind ? { slot, targetField, expectedAnswerKind } : undefined;
 }
 
 function requiredEnumField<T extends string>(
@@ -363,6 +404,7 @@ function parseAction(value: unknown, index = 0, key = "actions"): ParseResult<In
     const relatedType = requiredEnumField(value, "relatedType", checkInRelatedTypes, path, errors);
     const relatedRef = optionalStringField(value, "relatedRef", path, errors);
     const relatedId = optionalStringField(value, "relatedId", path, errors);
+    const clarification = optionalClarificationField(value, "clarification", path, errors);
     const askAt = optionalStringField(value, "askAt", path, errors);
     const action =
       title && question && relatedType
@@ -373,6 +415,7 @@ function parseAction(value: unknown, index = 0, key = "actions"): ParseResult<In
             relatedType,
             relatedRef,
             relatedId,
+            clarification,
             askAt
           }
         : null;

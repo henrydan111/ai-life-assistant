@@ -509,6 +509,7 @@ export function applyInterpretation(
             question: action.question,
             relatedType,
             relatedId,
+            clarification: action.clarification,
             askAt: action.askAt ?? nowIso(),
             status: "pending",
             createdAt: nowIso()

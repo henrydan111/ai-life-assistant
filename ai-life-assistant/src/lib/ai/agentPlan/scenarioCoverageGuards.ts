@@ -35,6 +35,52 @@ function rawRequestsMilk(rawText: string) {
   return /牛奶/.test(rawText) && /(买|需要|没有|没了|缺|下单|订)/.test(rawText);
 }
 
+function segmentMentioning(rawText: string, pattern: RegExp) {
+  return rawText.split(/然后|另外|还有|并且|到时候|[，。,.!?！？；;]/).find((segment) => pattern.test(segment)) ?? rawText;
+}
+
+function hasExplicitTimeInSegment(segment: string) {
+  return /(今天|明天|后天|今晚|明早|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：)|20\d{2})/.test(segment);
+}
+
+function rawHasExplicitMilkReminderTime(rawText: string) {
+  return hasExplicitTimeInSegment(segmentMentioning(rawText, /牛奶/));
+}
+
+function rawHasCoarseWeekendShanghaiTrip(rawText: string) {
+  if (!/上海/.test(rawText) || !/(周末|本周末|这周末)/.test(rawText) || !/(去|出行|旅行|出差|计划)/.test(rawText)) {
+    return false;
+  }
+  const segment = segmentMentioning(rawText, /上海|周末|本周末|这周末/).replace(/(本|这)?周末/g, "");
+  return !/(周[一二三四五六日天]|星期[一二三四五六日天]|今天|明天|后天|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：)|20\d{2})/.test(
+    segment
+  );
+}
+
+function rawHasExplicitRecentSleepGoal(rawText: string) {
+  return /最近|近期|这段时间/.test(rawText) && rawHasRecurringSleepGoal(rawText) && resolveRecurringSleepTarget(rawText).ambiguity === "none";
+}
+
+function isRedundantSleepScopeConfirmation(text: string) {
+  return /(你要设置的日常目标|是否.*(设置|记录|保存).*睡|日常目标.*对吗|对吗.*睡|睡.*对吗|短期|长期|试一段时间|持续多久|生效范围|范围)/.test(text);
+}
+
+function isOpenShanghaiTimeQuestion(text: string) {
+  return /上海/.test(text) && /(具体|哪天|几点|什么时候|出发|出行时间)/.test(text);
+}
+
+function hasInventedCoarseWeekendTravelDefault(text: string) {
+  return /(202\d|20\d{2}|周日|星期日|周天|星期天|下午\s*2\s*点|(?:^|[^\d])2\s*点|14:00|明天中午)/.test(text);
+}
+
+function hasInventedMilkReminderDefault(feedbackQuestion: string | undefined, actions: InterpretAction[]) {
+  const milkTexts = actions.filter((action) => /牛奶/.test(actionText(action))).map(actionText);
+  if (feedbackQuestion && /牛奶/.test(feedbackQuestion)) {
+    milkTexts.push(segmentMentioning(feedbackQuestion, /牛奶/));
+  }
+  return milkTexts.some((text) => /(明天中午|明天.*中午|中午.*牛奶|牛奶.*中午)/.test(text));
+}
+
 function rawHasKidsClass(rawText: string) {
   return /(孩子|小孩|儿子|女儿|兴趣班)/.test(rawText) && /兴趣班/.test(rawText);
 }
@@ -104,6 +150,9 @@ export function validateCoreIntentCoverage(rawText: string, actions: InterpretAc
         errors.push("“每天12点前睡觉”需要在 feedback.question 或 add_check_in 中追问中午/晚上/午夜。");
       }
     }
+    if (rawHasExplicitRecentSleepGoal(rawText) && isRedundantSleepScopeConfirmation(combinedText)) {
+      errors.push("用户已明确给出“最近”的重复睡眠目标和时间，不应再追问“日常目标是否正确”或“短期/长期”。");
+    }
   }
 
   if (rawHasThursdayFridayLeave(rawText)) {
@@ -163,12 +212,47 @@ export function validateCoreIntentCoverage(rawText: string, actions: InterpretAc
     }
   }
 
+  if (rawHasCoarseWeekendShanghaiTrip(rawText)) {
+    const shanghaiEvents = actions.filter(
+      (action): action is Extract<InterpretAction, { type: "add_life_event" }> =>
+        action.type === "add_life_event" && /上海/.test(actionText(action))
+    );
+    if (!shanghaiEvents.length) {
+      errors.push("原文包含本周末去上海安排，最终 actions 缺少上海 life_event。");
+    }
+    if (shanghaiEvents.some((event) => Boolean(event.startsAt || event.endsAt))) {
+      errors.push("用户只说本周末去上海，没有给出具体日期/时间，不能写入 startsAt 或 endsAt。");
+    }
+    if (hasInventedCoarseWeekendTravelDefault(combinedText)) {
+      errors.push("用户只说本周末去上海，反馈或确认问题中不能编造周日下午2点、具体日期或类似默认时间。");
+    }
+    if (!isOpenShanghaiTimeQuestion(combinedText)) {
+      errors.push("本周末去上海缺少具体时间时，需要开放式追问具体是哪天、几点出发。");
+    }
+  }
+
   if (rawHasSuzhouTrip(rawText) && !actions.some((action) => /苏州/.test(actionText(action)))) {
     errors.push("原文包含苏州出行安排，但 actions 中没有覆盖苏州相关意图。");
   }
 
-  if (rawRequestsMilk(rawText) && !actions.some((action) => /牛奶/.test(actionText(action)))) {
-    errors.push("原文包含牛奶购买/下单意图，但 actions 中没有覆盖牛奶。");
+  if (rawRequestsMilk(rawText)) {
+    if (!actions.some((action) => /牛奶/.test(actionText(action)))) {
+      errors.push("原文包含牛奶购买/下单意图，但 actions 中没有覆盖牛奶。");
+    }
+    if (!rawHasExplicitMilkReminderTime(rawText)) {
+      const milkTimedActions = actions.filter((action) => {
+        if (!/牛奶/.test(actionText(action))) return false;
+        if (action.type === "add_task") return Boolean(action.dueAt);
+        if (action.type === "add_shopping_item") return Boolean(action.dueAt || action.expectedAt);
+        return false;
+      });
+      if (milkTimedActions.length) {
+        errors.push("用户没有给出买牛奶的提醒时间，不能为牛奶待办或购物项写入 dueAt/expectedAt。");
+      }
+      if (hasInventedMilkReminderDefault(feedbackQuestion, actions)) {
+        errors.push("用户没有给出买牛奶的提醒时间，反馈或确认问题中不能编造“明天中午”。");
+      }
+    }
   }
 
   if (rawHasKidsClass(rawText)) {

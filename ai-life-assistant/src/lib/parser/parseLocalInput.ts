@@ -327,9 +327,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
     const question =
       resolution.ambiguity === "ampm"
         ? (resolution.question ?? "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？")
-        : isRecent
-          ? "这个睡眠目标你想先从今天开始试一段时间，还是长期保持？"
-          : undefined;
+        : undefined;
     const checkIn: AssistantCheckIn | undefined = question
       ? {
           id: createId("check"),
@@ -337,6 +335,10 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
           question,
           relatedType: "routine_goal",
           relatedId: goal.id,
+          clarification:
+            resolution.ambiguity === "ampm"
+              ? { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
+              : undefined,
           askAt: now,
           status: "pending",
           createdAt: now
@@ -512,6 +514,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
             question: travelDateQuestion(text, location),
             relatedType: "life_event",
             relatedId: event.id,
+            clarification: { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" },
             askAt: now,
             status: "pending",
             createdAt: now

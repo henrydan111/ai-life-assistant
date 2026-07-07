@@ -244,6 +244,57 @@ const scenarios = [
     ]
   },
   {
+    id: "explicit_sleep_milk_weekend_trip_no_default_confirmations",
+    title: "网站流：明确睡眠时间时不能编造牛奶和上海默认确认",
+    state: () => createState(),
+    minScoreRatio: 1,
+    steps: [
+      {
+        rawText: "我最近都希望每天能晚上12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶，我这周末另外要计划去上海",
+        expectations: [
+          expect("睡眠直接保存为最近每天 00:00 前的节奏目标", 3, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠节奏目标";
+            if (goal.cadence !== "daily") return `cadence=${goal.cadence}`;
+            if (goal.targetTime !== "00:00") return `targetTime=${goal.targetTime}`;
+            if (goal.targetTimeRelation !== "before") return `targetTimeRelation=${goal.targetTimeRelation}`;
+            return goal.scope === "recent" || /最近/.test(goal.scopeLabel ?? "") || `scope=${goal.scope}, scopeLabel=${goal.scopeLabel}`;
+          }),
+          expect("不再追问已明确的睡眠目标范围或对错", 2, ({ after, feedback, dashboard }) => {
+            const text = [feedback.question, dashboard.visibleText, ...after.checkIns.map(itemText)].filter(Boolean).join(" ");
+            return !/(确认日常目标|你要设置的日常目标|睡.*对吗|对吗.*睡|长期保持|试一段时间|短期目标还是长期目标)/.test(text)
+              ? true
+              : text;
+          }),
+          expect("牛奶保存为购物项和普通今日事项，但没有默认提醒时间", 3, ({ after }) => {
+            const milk = after.shoppingItems.filter((item) => item.status !== "removed" && /牛奶/.test(itemText(item)));
+            const milkTasks = activeTasks(after, /买牛奶|牛奶/);
+            if (milk.length !== 1) return `牛奶购物项数量=${milk.length}`;
+            if (!milkTasks.length) return "缺少买牛奶今日事项";
+            return milkTasks.every((task) => !task.dueAt) || `不应有默认 dueAt：${milkTasks.map(itemText).join(" | ")}`;
+          }),
+          expect("周末上海保存为待确认时间的出行草稿", 3, ({ after }) => {
+            const events = plannedEvents(after, /上海/);
+            if (events.length !== 1) return `上海 life_event 数量=${events.length}`;
+            if (events[0].startsAt) return `不应有默认 startsAt=${events[0].startsAt}`;
+            const checks = after.checkIns.filter(
+              (checkIn) =>
+                checkIn.status === "pending" &&
+                checkIn.relatedType === "life_event" &&
+                checkIn.relatedId === events[0].id &&
+                /(具体|哪天|几点|什么时候|出发|出行时间)/.test(itemText(checkIn))
+            );
+            return checks.length >= 1 || "缺少开放式出行时间确认";
+          }),
+          expect("dashboard 不显示明天中午或周日下午2点这类默认猜测", 3, ({ feedback, dashboard }) => {
+            const text = [feedback.question, dashboard.visibleText].filter(Boolean).join(" ");
+            return !/(明天中午|周日下午2点|下午\s*2点|14:00|2026年7月12日)/.test(text) ? true : text;
+          })
+        ]
+      }
+    ]
+  },
+  {
     id: "pending_confirmation_followup_dashboard",
     title: "网站流：补充确认后 dashboard 不显示旧追问",
     state: () =>
@@ -455,18 +506,20 @@ const scenarios = [
             const sleepTasks = activeTasks(after, /睡觉|睡|休息/);
             return sleepTasks.length === 0 || `sleepTasks=${sleepTasks.map(itemText).join(" | ")}`;
           }),
-          expect("最近范围有 routine_goal 确认", 2, ({ after, feedback }) => {
+          expect("最近范围直接保存，不再重复确认", 2, ({ after, feedback, dashboard }) => {
             const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
             if (!goal) return "缺少睡眠节奏目标";
-            const scopePattern = /(从今天|开始|试|多久|持续|生效范围|最近|长期|范围)/;
             const text = [feedback.question, ...after.checkIns.map(itemText)].filter(Boolean).join(" ");
-            const hasCheckIn = after.checkIns.some(
+            const hasScopeCheck = after.checkIns.some(
               (checkIn) =>
                 checkIn.relatedType === "routine_goal" &&
                 checkIn.relatedId === goal.id &&
-                scopePattern.test(itemText(checkIn))
+                /(从今天|开始|试|多久|持续|生效范围|长期|短期|范围)/.test(itemText(checkIn))
             );
-            return hasCheckIn && scopePattern.test(text) ? true : "缺少范围确认";
+            if (hasScopeCheck || /(确认日常目标|长期保持|试一段时间|短期目标还是长期目标)/.test(text)) {
+              return `不应出现范围确认：${text}`;
+            }
+            return !/(确认日常目标|长期保持|试一段时间|短期目标还是长期目标)/.test(dashboard.visibleText) || dashboard.visibleText;
           })
         ]
       }

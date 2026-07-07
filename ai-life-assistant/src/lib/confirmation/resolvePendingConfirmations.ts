@@ -71,6 +71,15 @@ function checkInText(checkIn: AssistantCheckIn) {
   return `${checkIn.title} ${checkIn.question}`;
 }
 
+function checkInClarifies(
+  checkIn: AssistantCheckIn,
+  slot: NonNullable<AssistantCheckIn["clarification"]>["slot"],
+  legacyPattern: RegExp
+) {
+  if (checkIn.clarification) return checkIn.clarification.slot === slot;
+  return legacyPattern.test(checkInText(checkIn));
+}
+
 function pendingCheckIns(state: AssistantState) {
   return state.checkIns.filter((checkIn) => checkIn.status === "pending");
 }
@@ -135,7 +144,7 @@ function matchingRoutineSegment(
 function resolveLifeEventTime(rawText: string, state: AssistantState) {
   const onlyPendingCheckIn = pendingCheckIns(state).length === 1;
   const candidates = pendingCheckIns(state).filter(
-    (checkIn) => checkIn.relatedType === "life_event" && timeQuestionPattern.test(checkInText(checkIn))
+    (checkIn) => checkIn.relatedType === "life_event" && checkInClarifies(checkIn, "life_event_time", timeQuestionPattern)
   );
   const matched = candidates
     .map((checkIn) => {
@@ -189,9 +198,15 @@ function routineScope(rawText: string) {
   return undefined;
 }
 
+function routineScopeIsConfirmed(goal: AssistantState["routineGoals"][number]) {
+  if (goal.scope === "ongoing") return true;
+  if (goal.scope === "recent" && goal.scopeLabel && !/(最近|近期)$/.test(goal.scopeLabel)) return true;
+  return false;
+}
+
 function resolveRoutineScope(rawText: string, state: AssistantState) {
   const candidates = pendingCheckIns(state).filter(
-    (checkIn) => checkIn.relatedType === "routine_goal" && routineScopeQuestionPattern.test(checkInText(checkIn))
+    (checkIn) => checkIn.relatedType === "routine_goal" && checkInClarifies(checkIn, "routine_goal_scope", routineScopeQuestionPattern)
   );
   const matched = candidates
     .map((checkIn) => {
@@ -263,7 +278,7 @@ function clarifiedRoutineTargetTime(rawText: string) {
 
 function resolveRoutineTargetTime(rawText: string, state: AssistantState) {
   const candidates = pendingCheckIns(state).filter(
-    (checkIn) => checkIn.relatedType === "routine_goal" && routineTargetTimeQuestionPattern.test(checkInText(checkIn))
+    (checkIn) => checkIn.relatedType === "routine_goal" && checkInClarifies(checkIn, "routine_goal_target_time", routineTargetTimeQuestionPattern)
   );
   const matched = candidates
     .map((checkIn) => {
@@ -306,17 +321,17 @@ export function cleanupResolvedCheckIns(state: AssistantState): AssistantState {
     ...state,
     checkIns: state.checkIns.map((checkIn) => {
       if (checkIn.status !== "pending") return checkIn;
-      if (checkIn.relatedType === "life_event" && timeQuestionPattern.test(checkInText(checkIn))) {
+      if (checkIn.relatedType === "life_event" && checkInClarifies(checkIn, "life_event_time", timeQuestionPattern)) {
         const event = state.lifeEvents.find((item) => item.id === checkIn.relatedId);
         return event?.startsAt ? { ...checkIn, status: "answered" as const } : checkIn;
       }
       if (checkIn.relatedType === "routine_goal") {
         const goal = state.routineGoals.find((item) => item.id === checkIn.relatedId);
         if (!goal) return checkIn;
-        if (routineTargetTimeQuestionPattern.test(checkInText(checkIn)) && goal.targetTime) {
+        if (checkInClarifies(checkIn, "routine_goal_target_time", routineTargetTimeQuestionPattern) && goal.targetTime) {
           return { ...checkIn, status: "answered" as const };
         }
-        if (routineScopeQuestionPattern.test(checkInText(checkIn)) && goal.scope !== "unspecified") {
+        if (checkInClarifies(checkIn, "routine_goal_scope", routineScopeQuestionPattern) && routineScopeIsConfirmed(goal)) {
           return { ...checkIn, status: "answered" as const };
         }
       }

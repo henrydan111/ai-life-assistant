@@ -49,6 +49,7 @@ export function summarizeState(state: AssistantState) {
       question: checkIn.question,
       relatedType: checkIn.relatedType,
       relatedId: checkIn.relatedId,
+      clarification: checkIn.clarification,
       askAt: checkIn.askAt,
       status: checkIn.status
     })),

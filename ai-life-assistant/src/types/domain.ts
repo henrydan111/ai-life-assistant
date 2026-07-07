@@ -88,6 +88,11 @@ export type AssistantCheckIn = {
   question: string;
   relatedType: "task" | "shopping_item" | "life_event" | "project" | "memory" | "routine_goal";
   relatedId: string;
+  clarification?: {
+    slot: "life_event_time" | "routine_goal_scope" | "routine_goal_target_time";
+    targetField: "startsAt" | "scope" | "targetTime";
+    expectedAnswerKind: "date_time" | "choice" | "time";
+  };
   askAt: string;
   status: "pending" | "answered" | "dismissed";
   createdAt: string;

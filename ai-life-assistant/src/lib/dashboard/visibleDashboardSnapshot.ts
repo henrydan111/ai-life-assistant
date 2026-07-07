@@ -2,7 +2,7 @@ import { generateDashboard } from "@/lib/dashboard/generateDashboard";
 import { addDays, startOfLocalDay } from "@/lib/time/parseTime";
 import type { AssistantCheckIn, AssistantState, DashboardData } from "@/types/domain";
 
-type VisibleCheckIn = Pick<AssistantCheckIn, "id" | "title" | "question" | "relatedType" | "relatedId" | "askAt" | "status">;
+type VisibleCheckIn = Pick<AssistantCheckIn, "id" | "title" | "question" | "relatedType" | "relatedId" | "clarification" | "askAt" | "status">;
 
 type VisibleItemWithReminders = {
   id: string;
@@ -52,6 +52,7 @@ function toVisibleCheckIn(checkIn: AssistantCheckIn): VisibleCheckIn {
     question: checkIn.question,
     relatedType: checkIn.relatedType,
     relatedId: checkIn.relatedId,
+    clarification: checkIn.clarification,
     askAt: checkIn.askAt,
     status: checkIn.status
   };
