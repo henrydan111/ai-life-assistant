@@ -147,7 +147,7 @@ function splitCombinedTravelPrepCheckIns(state: AssistantState): AssistantState 
   return additions.length ? { ...state, checkIns: [...additions, ...checkIns] } : { ...state, checkIns };
 }
 
-function normalizeAssistantState(state: LegacyAssistantState): AssistantState {
+export function normalizeAssistantState(state: LegacyAssistantState): AssistantState {
   const normalized: AssistantState = {
     ...state,
     preferences: normalizePreferences(state.preferences),

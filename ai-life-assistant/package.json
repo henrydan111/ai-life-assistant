@@ -10,7 +10,8 @@
     "eval:regression": "node scripts/regression-evals.cjs",
     "eval:agent-plan": "node scripts/agent-plan-live-evals.cjs",
     "eval:agent-plan:smoke": "node scripts/agent-plan-live-evals.cjs --tag smoke",
-    "eval:agent-plan:list": "node scripts/agent-plan-live-evals.cjs --list"
+    "eval:agent-plan:list": "node scripts/agent-plan-live-evals.cjs --list",
+    "eval:site-flow": "node scripts/agent-plan-site-flow-evals.cjs"
   },
   "dependencies": {
     "lucide-react": "latest",
