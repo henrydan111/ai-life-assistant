@@ -2,7 +2,7 @@ import { normalizeAiInterpretation } from "@/lib/ai/interpretation";
 import type { AssistantState, MemoryContext } from "@/types/domain";
 import { localNowText, summarizeState } from "./context";
 import { COVERAGE_PROMPT, PLANNING_PROMPT, UNDERSTANDING_PROMPT } from "./prompts";
-import { splitCombinedTravelPrepCheckIns } from "./travelPrepPolicy";
+import { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } from "./travelPrepPolicy";
 import { requestValidatedAgentPlanJson } from "./validatedJson";
 import {
   normalizeCoverageReview,
@@ -138,7 +138,7 @@ export async function planFinalActionsWithAgentPlan({
     stageName: "Agent Plan planning",
     normalize: (value) => {
       const interpretation = normalizeAiInterpretation(value);
-      return interpretation ? splitCombinedTravelPrepCheckIns(interpretation) : null;
+      return interpretation ? ensureMentionedTravelDraft(rawText, splitCombinedTravelPrepCheckIns(interpretation)) : null;
     },
     validate: (interpretation, raw) => validateFinalInterpretation(rawText, interpretation, raw)
   });

@@ -83,3 +83,49 @@ export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation
 
   return { ...interpretation, actions };
 }
+
+function mentionedTravelLocation(rawText: string) {
+  const knownCity = rawText.match(/(?:去|出差去|旅行去|出行去)(苏州|上海|北京|杭州|南京|深圳|广州|成都|重庆|西安|武汉|长沙|厦门|青岛|天津|香港|澳门|台北)/);
+  if (knownCity?.[1]) return knownCity[1];
+  const english = rawText.match(/\b(?:go to|travel to|trip to|visit)\s+([A-Z][a-zA-Z\s-]{1,30})/);
+  return english?.[1]?.trim();
+}
+
+function uniqueRef(actions: InterpretAction[], base: string) {
+  const refs = new Set(
+    actions.flatMap((action) => ("ref" in action && action.ref ? [action.ref] : []))
+  );
+  if (!refs.has(base)) return base;
+  let index = 2;
+  while (refs.has(`${base}_${index}`)) index += 1;
+  return `${base}_${index}`;
+}
+
+export function ensureMentionedTravelDraft(rawText: string, interpretation: AiInterpretation): AiInterpretation {
+  const location = mentionedTravelLocation(rawText);
+  if (!location) return interpretation;
+  if (interpretation.actions.some((action) => actionText(action).includes(location))) return interpretation;
+
+  const ref = uniqueRef(interpretation.actions, "travel_draft");
+  return {
+    ...interpretation,
+    actions: [
+      {
+        type: "add_life_event",
+        ref,
+        title: /[\u4e00-\u9fa5]/.test(location) ? `去${location}` : `Trip to ${location}`,
+        category: "travel",
+        location,
+        priority: "medium"
+      },
+      {
+        type: "add_check_in",
+        title: /[\u4e00-\u9fa5]/.test(location) ? "确认出行时间" : "Confirm trip date",
+        question: /[\u4e00-\u9fa5]/.test(location) ? `你打算哪天去${location}？` : `When are you planning to go to ${location}?`,
+        relatedType: "life_event",
+        relatedRef: ref
+      },
+      ...interpretation.actions
+    ]
+  };
+}

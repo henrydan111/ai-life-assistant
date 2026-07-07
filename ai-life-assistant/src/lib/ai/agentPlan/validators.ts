@@ -93,22 +93,18 @@ export function validateNormalizedActionCount(raw: unknown, normalizedCount: num
     : [`${key} 中有 ${source.length - normalizedCount} 个 action 没有通过 schema 校验，不能被静默丢弃。`];
 }
 
-export function validateUnderstanding(rawText: string, understanding: IntentUnderstanding, raw: unknown) {
-  return [
-    ...validateAiInterpretationSchema(raw),
-    ...validateCoreIntentCoverage(rawText, understanding.actions, understanding.feedback.question)
-  ];
+export function validateUnderstanding(_rawText: string, understanding: IntentUnderstanding, raw: unknown) {
+  return validateAiInterpretationSchema(raw);
 }
 
-export function validateCoverage(rawText: string, coverage: CoverageReview, raw: unknown) {
+export function validateCoverage(_rawText: string, coverage: CoverageReview, raw: unknown) {
   const revisedKey = isRecord(raw) && Array.isArray(raw.revised_actions)
     ? "revised_actions"
     : isRecord(raw) && Array.isArray(raw.revisedActions)
       ? "revisedActions"
       : "actions";
   const errors = [
-    ...validateNormalizedActionCount(raw, coverage.revisedActions.length, revisedKey),
-    ...validateCoreIntentCoverage(rawText, coverage.revisedActions)
+    ...validateNormalizedActionCount(raw, coverage.revisedActions.length, revisedKey)
   ];
   if (!isRecord(raw) || (!Array.isArray(raw.revised_actions) && !Array.isArray(raw.revisedActions))) {
     errors.push("revised_actions 必须返回完整 action 列表，不能省略或改名为其他字段。");

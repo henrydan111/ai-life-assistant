@@ -8,7 +8,16 @@ function parseJsonObject(content: string) {
   if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
     throw new Error("Agent Plan response did not contain a JSON object.");
   }
-  return JSON.parse(raw.slice(firstBrace, lastBrace + 1)) as unknown;
+  const candidate = raw.slice(firstBrace, lastBrace + 1);
+  try {
+    return JSON.parse(candidate) as unknown;
+  } catch (error) {
+    const withoutTrailingCommas = candidate.replace(/,\s*([}\]])/g, "$1");
+    if (withoutTrailingCommas !== candidate) {
+      return JSON.parse(withoutTrailingCommas) as unknown;
+    }
+    throw error;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
