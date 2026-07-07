@@ -10,7 +10,7 @@ import { requestValidatedAgentPlanJson } from "@/lib/ai/agentPlan/validatedJson"
 import type { ProgressReporter } from "@/lib/ai/agentPlan/types";
 import { selectRelevantMemories } from "@/lib/memory/selectRelevantMemories";
 import { DEFAULT_TIMEZONE } from "@/lib/time/parseTime";
-import type { AssistantState, MemoryContext, TranscriptRepair } from "@/types/domain";
+import type { AssistantState, MemoryContext } from "@/types/domain";
 
 export {
   canUseAgentPlan,
@@ -18,6 +18,7 @@ export {
   resolveAgentPlanLanguageModel
 } from "@/lib/ai/agentPlan/provider";
 export { requestValidatedAgentPlanJson } from "@/lib/ai/agentPlan/validatedJson";
+export { repairTranscriptWithAgentPlan } from "@/lib/ai/agentPlan/transcriptRepair";
 
 type IntentUnderstanding = {
   feedback: AiInterpretation["feedback"];
@@ -156,31 +157,6 @@ ${ACTION_SCHEMA}
 正确结构：一个今日睡觉目标 + 一个澄清睡觉提醒时间的 check-in；一个“申请周四和周五请假”待办 + 一个老板沟通 check-in；一个“周日晚上去上海吃晚饭” life_event + 一个“确认高铁票” check-in。若还提到行李或餐馆订位，分别再生成“收拾行李”“预订餐馆位置” check-in。不要把上海拆成多个主待办，不要把周四/周五请假拆成两个待办。
 `.trim();
 
-const TRANSCRIPT_REPAIR_PROMPT = `
-你是中文语音转写校准器，只负责把 ASR 原始转写修正成适合展示给用户和后续理解的文本。
-
-重要规则：
-- 你不是待办解析器，不要生成待办、日程或提醒。
-- 只修正高概率语音识别错误、断句、重复、错序和标点；不要新增用户没说过的事实。
-- 必须保留原文中的每个生活意图，不要为了通顺删掉半句话。
-- 不要替用户消除真实语义歧义。例如“今天12点前睡觉”不能改成“今晚24:00前睡觉”，除非原始转写明确有“今晚/24点/零点”等信息。
-- 如果修正后仍有关键歧义，transcript 放最佳修正版，needsUserConfirmation 设为 true，并给出一句用户能直接回答的问题。
-- 如果只是时间语义本身需要产品追问，不代表转写失败。比如“今天12点前睡觉”本身可以 confidence 较高，但后续规划阶段仍会追问中午还是今晚。
-- 如果 payload.validation.errors 存在，说明上一轮 JSON 没有通过本地完整性校验；必须修正 errors 指出的缺失，并重新输出完整 JSON。
-- 输出必须是 JSON，不要 Markdown，不要解释。
-
-输出 JSON：
-{
-  "transcript": "修正后的正式用户消息",
-  "confidence": 0.0,
-  "needsUserConfirmation": false,
-  "question": "可选，只有关键内容不确定时填写",
-  "repairs": [
-    { "from": "原片段", "to": "修正片段", "reason": "简短原因" }
-  ]
-}
-`.trim();
-
 function timezoneForState(state: AssistantState) {
   return state.preferences.timezone || runtimeTimezone();
 }
@@ -238,10 +214,6 @@ function optionalString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function optionalNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
 function stringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
@@ -290,79 +262,6 @@ function normalizeCoverageReview(value: unknown): CoverageReview | null {
   };
 }
 
-function normalizeTranscriptRepair(value: unknown, rawTranscript: string): TranscriptRepair | null {
-  if (!isRecord(value)) return null;
-
-  const transcript = optionalString(value.transcript);
-  const confidenceValue = optionalNumber(value.confidence);
-  if (!transcript || confidenceValue === undefined) return null;
-  const needsUserConfirmation =
-    typeof value.needsUserConfirmation === "boolean"
-      ? value.needsUserConfirmation
-      : typeof value.needs_user_confirmation === "boolean"
-        ? value.needs_user_confirmation
-        : undefined;
-  if (needsUserConfirmation === undefined || !Array.isArray(value.repairs)) return null;
-
-  const confidence = Math.max(0, Math.min(1, confidenceValue));
-  const repairs = rawArray(value.repairs)
-    .filter(isRecord)
-    .map((repair) => ({
-      from: optionalString(repair.from),
-      to: optionalString(repair.to),
-      reason: optionalString(repair.reason) ?? "语音转写校准"
-    }))
-    .slice(0, 12);
-
-  return {
-    rawTranscript,
-    transcript,
-    confidence,
-    needsUserConfirmation,
-    question: optionalString(value.question),
-    repairs
-  };
-}
-
-export async function repairTranscriptWithAgentPlan({
-  rawTranscript,
-  model
-}: {
-  rawTranscript: string;
-  model?: string;
-}): Promise<TranscriptRepair> {
-  if (!canUseAgentPlan()) {
-    throw new Error("Agent Plan transcript repair runtime is not configured.");
-  }
-
-  const trimmed = rawTranscript.trim();
-  if (!trimmed) {
-    return {
-      rawTranscript,
-      transcript: "",
-      confidence: 0,
-      needsUserConfirmation: true,
-      question: "我没有听清刚才的内容，可以再说一遍吗？",
-      repairs: []
-    };
-  }
-
-  return requestValidatedAgentPlanJson({
-    model: resolveAgentPlanLanguageModel(model),
-    systemPrompt: TRANSCRIPT_REPAIR_PROMPT,
-    payload: {
-      now: new Date().toISOString(),
-      localNow: localNowText(runtimeTimezone()),
-      timezone: runtimeTimezone(),
-      rawTranscript: trimmed
-    },
-    temperature: 0,
-    stageName: "Agent Plan transcript repair",
-    normalize: (value) => normalizeTranscriptRepair(value, trimmed),
-    validate: (repair) => validateTranscriptRepair(trimmed, repair)
-  });
-}
-
 function actionText(action: InterpretAction) {
   if (action.type === "add_task") return [action.title, action.description].filter(Boolean).join(" ");
   if (action.type === "add_life_event") return [action.title, action.description, action.location].filter(Boolean).join(" ");
@@ -371,23 +270,6 @@ function actionText(action: InterpretAction) {
   if (action.type === "update_shopping_status") return action.itemName;
   if (action.type === "mark_task_done") return action.matchTitle;
   return "";
-}
-
-function validateTranscriptRepair(rawTranscript: string, repair: TranscriptRepair) {
-  const errors: string[] = [];
-  if (!repair.transcript.trim()) {
-    errors.push("transcript 不能为空。");
-  }
-  if (repair.confidence < 0 || repair.confidence > 1) {
-    errors.push("confidence 必须在 0 到 1 之间。");
-  }
-  if (repair.needsUserConfirmation && !repair.question?.trim()) {
-    errors.push("needsUserConfirmation 为 true 时必须提供 question。");
-  }
-  if (rawTranscript.length >= 8 && repair.transcript.length < Math.max(4, rawTranscript.length * 0.35)) {
-    errors.push("transcript 相比原始转写过短，可能丢失了用户意图。");
-  }
-  return errors;
 }
 
 function rawHasAmbiguousSleepDeadline(rawText: string) {
