@@ -1,0 +1,111 @@
+import { requestAgentPlanChatCompletion } from "./provider";
+
+function parseJsonObject(content: string) {
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const raw = fenced ? fenced[1] : content;
+  const firstBrace = raw.indexOf("{");
+  const lastBrace = raw.lastIndexOf("}");
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
+    throw new Error("Agent Plan response did not contain a JSON object.");
+  }
+  return JSON.parse(raw.slice(firstBrace, lastBrace + 1)) as unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function requestAgentPlanJson({
+  model,
+  systemPrompt,
+  payload,
+  temperature = 0.2
+}: {
+  model: string;
+  systemPrompt: string;
+  payload: unknown;
+  temperature?: number;
+}) {
+  const response = await requestAgentPlanChatCompletion({
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: JSON.stringify(payload) }
+    ],
+    temperature,
+    response_format: { type: "json_object" }
+  });
+  const content = response.choices?.[0]?.message?.content;
+  if (!content) {
+    throw new Error("Agent Plan returned an empty response.");
+  }
+  return parseJsonObject(content);
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function withValidationPayload(payload: unknown, errors: string[], previousResult: unknown) {
+  const validation = {
+    errors,
+    previous_result: previousResult
+  };
+  return isRecord(payload) ? { ...payload, validation } : { input: payload, validation };
+}
+
+export async function requestValidatedAgentPlanJson<T>({
+  model,
+  systemPrompt,
+  payload,
+  temperature = 0.2,
+  stageName,
+  normalize,
+  validate = () => []
+}: {
+  model: string;
+  systemPrompt: string;
+  payload: unknown;
+  temperature?: number;
+  stageName: string;
+  normalize: (value: unknown) => T | null;
+  validate?: (value: T, raw: unknown) => string[];
+}) {
+  async function run(attemptPayload: unknown, attemptTemperature: number) {
+    try {
+      const raw = await requestAgentPlanJson({
+        model,
+        systemPrompt,
+        payload: attemptPayload,
+        temperature: attemptTemperature
+      });
+      const value = normalize(raw);
+      if (!value) {
+        return {
+          raw,
+          value: null,
+          errors: [`${stageName} 输出不符合预期 JSON schema。`]
+        };
+      }
+      return {
+        raw,
+        value,
+        errors: validate(value, raw)
+      };
+    } catch (error) {
+      return {
+        raw: undefined,
+        value: null,
+        errors: [`${stageName} 输出无法解析：${errorMessage(error)}`]
+      };
+    }
+  }
+
+  const first = await run(payload, temperature);
+  if (first.value && !first.errors.length) return first.value;
+
+  const retry = await run(withValidationPayload(payload, first.errors, first.raw), 0);
+  if (retry.value && !retry.errors.length) return retry.value;
+
+  throw new Error(`${stageName} failed validation: ${retry.errors.join(" ")}`);
+}

@@ -5,31 +5,19 @@ import {
   type AiInterpretation,
   type InterpretAction
 } from "@/lib/ai/interpretation";
-import { defaultAgentPlanLanguageModel, isAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
+import { canUseAgentPlan, resolveAgentPlanLanguageModel, runtimeTimezone } from "@/lib/ai/agentPlan/provider";
+import { requestValidatedAgentPlanJson } from "@/lib/ai/agentPlan/validatedJson";
+import type { ProgressReporter } from "@/lib/ai/agentPlan/types";
 import { selectRelevantMemories } from "@/lib/memory/selectRelevantMemories";
 import { DEFAULT_TIMEZONE } from "@/lib/time/parseTime";
-import type { AiProcessingUpdate, AssistantState, MemoryContext, TranscriptRepair } from "@/types/domain";
+import type { AssistantState, MemoryContext, TranscriptRepair } from "@/types/domain";
 
-export type AgentPlanChatCompletionResponse = {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-};
-
-type AgentPlanChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
-};
-
-type AgentPlanChatCompletionRequest = {
-  model: string;
-  messages: AgentPlanChatMessage[];
-  temperature?: number;
-  response_format?: { type: "json_object" };
-  thinking?: { type: "disabled" | "enabled" };
-};
+export {
+  canUseAgentPlan,
+  requestAgentPlanChatCompletion,
+  resolveAgentPlanLanguageModel
+} from "@/lib/ai/agentPlan/provider";
+export { requestValidatedAgentPlanJson } from "@/lib/ai/agentPlan/validatedJson";
 
 type IntentUnderstanding = {
   feedback: AiInterpretation["feedback"];
@@ -45,8 +33,6 @@ type CoverageReview = {
   memoryCandidates: unknown[];
   proactiveCheckins: unknown[];
 };
-
-type ProgressReporter = (update: AiProcessingUpdate) => void;
 
 const ACTION_SCHEMA = `
 可用 action JSON schema：
@@ -195,26 +181,8 @@ const TRANSCRIPT_REPAIR_PROMPT = `
 }
 `.trim();
 
-function configured() {
-  return (
-    process.env.AI_PROVIDER === "volcengine_agent_plan_runtime" &&
-    process.env.ALLOW_AGENT_PLAN_RUNTIME === "true" &&
-    process.env.AI_PARSE_ENABLED !== "false" &&
-    Boolean(process.env.ARK_AGENT_PLAN_API_KEY)
-  );
-}
-
-function runtimeTimezone() {
-  return process.env.ASSISTANT_TIMEZONE || DEFAULT_TIMEZONE;
-}
-
 function timezoneForState(state: AssistantState) {
   return state.preferences.timezone || runtimeTimezone();
-}
-
-function endpoint() {
-  const base = process.env.ARK_AGENT_PLAN_OPENAI_BASE_URL ?? "https://ark.cn-beijing.volces.com/api/plan/v3";
-  return `${base.replace(/\/$/, "")}/chat/completions`;
 }
 
 function summarizeState(state: AssistantState) {
@@ -260,17 +228,6 @@ function summarizeState(state: AssistantState) {
     })),
     recentInputs: state.inputs.slice(0, 8).map((input) => input.rawText)
   };
-}
-
-function parseJsonObject(content: string) {
-  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const raw = fenced ? fenced[1] : content;
-  const firstBrace = raw.indexOf("{");
-  const lastBrace = raw.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
-    throw new Error("Agent Plan response did not contain a JSON object.");
-  }
-  return JSON.parse(raw.slice(firstBrace, lastBrace + 1)) as unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -367,101 +324,6 @@ function normalizeTranscriptRepair(value: unknown, rawTranscript: string): Trans
   };
 }
 
-async function requestAgentPlanJson({
-  model,
-  systemPrompt,
-  payload,
-  temperature = 0.2
-}: {
-  model: string;
-  systemPrompt: string;
-  payload: unknown;
-  temperature?: number;
-}) {
-  const response = await requestAgentPlanChatCompletion({
-    model,
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: JSON.stringify(payload) }
-    ],
-    temperature,
-    response_format: { type: "json_object" }
-  });
-  const content = response.choices?.[0]?.message?.content;
-  if (!content) {
-    throw new Error("Agent Plan returned an empty response.");
-  }
-  return parseJsonObject(content);
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function withValidationPayload(payload: unknown, errors: string[], previousResult: unknown) {
-  const validation = {
-    errors,
-    previous_result: previousResult
-  };
-  return isRecord(payload) ? { ...payload, validation } : { input: payload, validation };
-}
-
-export async function requestValidatedAgentPlanJson<T>({
-  model,
-  systemPrompt,
-  payload,
-  temperature = 0.2,
-  stageName,
-  normalize,
-  validate = () => []
-}: {
-  model: string;
-  systemPrompt: string;
-  payload: unknown;
-  temperature?: number;
-  stageName: string;
-  normalize: (value: unknown) => T | null;
-  validate?: (value: T, raw: unknown) => string[];
-}) {
-  async function run(attemptPayload: unknown, attemptTemperature: number) {
-    try {
-      const raw = await requestAgentPlanJson({
-        model,
-        systemPrompt,
-        payload: attemptPayload,
-        temperature: attemptTemperature
-      });
-      const value = normalize(raw);
-      if (!value) {
-        return {
-          raw,
-          value: null,
-          errors: [`${stageName} 输出不符合预期 JSON schema。`]
-        };
-      }
-      return {
-        raw,
-        value,
-        errors: validate(value, raw)
-      };
-    } catch (error) {
-      return {
-        raw: undefined,
-        value: null,
-        errors: [`${stageName} 输出无法解析：${errorMessage(error)}`]
-      };
-    }
-  }
-
-  const first = await run(payload, temperature);
-  if (first.value && !first.errors.length) return first.value;
-
-  const retry = await run(withValidationPayload(payload, first.errors, first.raw), 0);
-  if (retry.value && !retry.errors.length) return retry.value;
-
-  throw new Error(`${stageName} failed validation: ${retry.errors.join(" ")}`);
-}
-
 export async function repairTranscriptWithAgentPlan({
   rawTranscript,
   model
@@ -469,7 +331,7 @@ export async function repairTranscriptWithAgentPlan({
   rawTranscript: string;
   model?: string;
 }): Promise<TranscriptRepair> {
-  if (!configured()) {
+  if (!canUseAgentPlan()) {
     throw new Error("Agent Plan transcript repair runtime is not configured.");
   }
 
@@ -800,70 +662,6 @@ function validateFinalInterpretation(rawText: string, interpretation: AiInterpre
   ];
 }
 
-function shouldRetryWithoutResponseFormat(status: number, bodyText: string) {
-  return status === 400 && /response_format|json_object/i.test(bodyText) && /not supported|not valid|invalid/i.test(bodyText);
-}
-
-function shouldRetryWithoutThinking(status: number, bodyText: string) {
-  return status === 400 && /thinking/i.test(bodyText) && /not supported|not valid|invalid|mismatch/i.test(bodyText);
-}
-
-function resolveThinkingConfig(): AgentPlanChatCompletionRequest["thinking"] {
-  const explicit = process.env.ARK_AGENT_PLAN_THINKING;
-  if (explicit === "disabled" || explicit === "enabled") return { type: explicit };
-  if (process.env.ARK_AGENT_PLAN_DISABLE_THINKING === "true") return { type: "disabled" as const };
-  return undefined;
-}
-
-export function canUseAgentPlan() {
-  return configured();
-}
-
-export function resolveAgentPlanLanguageModel(model?: string) {
-  return isAgentPlanLanguageModel(model)
-    ? model
-    : process.env.ARK_AGENT_PLAN_CHAT_MODEL ?? defaultAgentPlanLanguageModel;
-}
-
-export async function requestAgentPlanChatCompletion(
-  requestBody: AgentPlanChatCompletionRequest
-): Promise<AgentPlanChatCompletionResponse> {
-  const thinking = requestBody.thinking ?? resolveThinkingConfig();
-  const initialBody = thinking ? { ...requestBody, thinking } : requestBody;
-
-  async function post(body: AgentPlanChatCompletionRequest) {
-    const response = await fetch(endpoint(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.ARK_AGENT_PLAN_API_KEY}`
-      },
-      body: JSON.stringify(body)
-    });
-    const text = await response.text();
-    return { response, text };
-  }
-
-  let currentBody = initialBody;
-  let { response, text } = await post(currentBody);
-  if (!response.ok && currentBody.response_format && shouldRetryWithoutResponseFormat(response.status, text)) {
-    const { response_format: _responseFormat, ...retryBody } = currentBody;
-    currentBody = retryBody;
-    ({ response, text } = await post(retryBody));
-  }
-  if (!response.ok && currentBody.thinking && shouldRetryWithoutThinking(response.status, text)) {
-    const { thinking: _thinking, ...retryBody } = currentBody;
-    currentBody = retryBody;
-    ({ response, text } = await post(retryBody));
-  }
-
-  if (!response.ok) {
-    throw new Error(`Agent Plan request failed with ${response.status}: ${text.slice(0, 500)}`);
-  }
-
-  return JSON.parse(text) as AgentPlanChatCompletionResponse;
-}
-
 function localNowText(timezone = DEFAULT_TIMEZONE) {
   return new Intl.DateTimeFormat("zh-CN", {
     timeZone: timezone,
@@ -1015,7 +813,7 @@ export async function interpretWithAgentPlan({
   model?: string;
   onProgress?: ProgressReporter;
 }): Promise<AiInterpretation> {
-  if (!configured()) {
+  if (!canUseAgentPlan()) {
     throw new Error("Agent Plan runtime is not configured.");
   }
 
