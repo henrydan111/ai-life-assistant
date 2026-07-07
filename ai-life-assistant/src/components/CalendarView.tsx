@@ -72,6 +72,14 @@ function parentKey(kind: string, id: string) {
   return `${kind}:${id}`;
 }
 
+function hasRelatedRecord(state: AssistantState, kind: string, id: string) {
+  if (kind === "task") return state.tasks.some((task) => task.id === id && task.status !== "cancelled");
+  if (kind === "life_event") return state.lifeEvents.some((event) => event.id === id && event.status !== "cancelled");
+  if (kind === "shopping_item") return state.shoppingItems.some((item) => item.id === id && item.status !== "removed");
+  if (kind === "project") return state.projects.some((project) => project.id === id && project.status !== "done");
+  return false;
+}
+
 function buildCalendarItems(state: AssistantState) {
   const items: CalendarItem[] = [];
   const parents = new Map<string, CalendarItem>();
@@ -135,6 +143,7 @@ function buildCalendarItems(state: AssistantState) {
       parent.reminders.push(reminder);
       continue;
     }
+    if (hasRelatedRecord(state, checkIn.relatedType, checkIn.relatedId)) continue;
     addItem({
       id: checkIn.id,
       title: checkIn.question,

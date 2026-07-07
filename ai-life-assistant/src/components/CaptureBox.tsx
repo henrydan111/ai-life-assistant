@@ -188,6 +188,7 @@ export function CaptureBox({
     if (!value || submitting) return;
     const timestamp = Date.now();
     setSubmitting(true);
+    setText("");
     setMessages((current) => [
       ...current,
       {
@@ -208,7 +209,6 @@ export function CaptureBox({
           detail: result.question
         }
       ]);
-      setText("");
     } catch (error) {
       const errorText = error instanceof Error && error.message && !/failed to fetch/i.test(error.message)
         ? error.message

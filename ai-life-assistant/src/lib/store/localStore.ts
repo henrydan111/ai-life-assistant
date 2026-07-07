@@ -13,6 +13,11 @@ type LegacyUserPreferences = UserPreferences & {
   maxDailyTasks?: number;
 };
 
+type LocalResolution = {
+  state: AssistantState;
+  feedback: ParseFeedback;
+};
+
 function normalizePreferences(preferences: LegacyUserPreferences): UserPreferences {
   const { maxDailyTasks: _maxDailyTasks, ...currentPreferences } = preferences;
   return {
@@ -45,6 +50,26 @@ function thisOrNextWeekday(target: number, base = new Date()) {
   return date;
 }
 
+function todayAt(hour: number, minute = 0) {
+  const date = new Date();
+  date.setHours(hour, minute, 0, 0);
+  return date.toISOString();
+}
+
+function tonightSleepDueAt() {
+  return todayAt(23, 59);
+}
+
+function sleepReminderAt() {
+  const reminder = new Date();
+  reminder.setHours(22, 0, 0, 0);
+  if (reminder.getTime() > Date.now()) return reminder.toISOString();
+
+  const due = new Date(tonightSleepDueAt());
+  due.setHours(Math.max(0, due.getHours() - 1), due.getMinutes(), 0, 0);
+  return due.toISOString();
+}
+
 function pendingCheckInExists(state: AssistantState, relatedId: string, pattern: RegExp) {
   return state.checkIns.some(
     (checkIn) =>
@@ -54,23 +79,144 @@ function pendingCheckInExists(state: AssistantState, relatedId: string, pattern:
   );
 }
 
+function sleepReminderExists(state: AssistantState, relatedId: string) {
+  return state.checkIns.some(
+    (checkIn) =>
+      checkIn.status === "pending" &&
+      checkIn.relatedType === "task" &&
+      checkIn.relatedId === relatedId &&
+      /睡前|准备睡觉|休息/.test(`${checkIn.title} ${checkIn.question}`)
+  );
+}
+
+function addSleepReminderIfNeeded(state: AssistantState, taskId: string) {
+  if (sleepReminderExists(state, taskId)) return state;
+  const now = nowIso();
+  return {
+    ...state,
+    checkIns: [
+      {
+        id: createId("check"),
+        title: "睡前提醒",
+        question: "快到睡觉时间了，开始准备休息吗？",
+        relatedType: "task" as const,
+        relatedId: taskId,
+        askAt: sleepReminderAt(),
+        status: "pending" as const,
+        createdAt: now
+      },
+      ...state.checkIns
+    ]
+  };
+}
+
+function isSleepClarification(checkIn: AssistantState["checkIns"][number]) {
+  return (
+    checkIn.status === "pending" &&
+    checkIn.relatedType === "task" &&
+    /确认睡觉提醒时间|今天12点前|12:00 前|24:00 前|睡前/.test(`${checkIn.title} ${checkIn.question}`)
+  );
+}
+
+function isTonightSleepAnswer(rawText: string) {
+  return /(今晚|晚上|24[:：]?00|24点|二十四点|零点|0点)/.test(rawText) && /(睡|休息|前)/.test(rawText);
+}
+
+function resolveSleepClarification(state: AssistantState, rawText: string, inputType: "text" | "voice"): LocalResolution | undefined {
+  if (!isTonightSleepAnswer(rawText)) return undefined;
+  const clarification = state.checkIns.find(isSleepClarification);
+  if (!clarification) return undefined;
+  const targetTask = state.tasks.find((task) => task.id === clarification.relatedId && task.status !== "cancelled");
+  if (!targetTask || !/睡觉|睡|休息|12点/.test(targetTask.title)) return undefined;
+
+  const now = nowIso();
+  const inputId = createId("input");
+  const updated: AssistantState = {
+    ...state,
+    inputs: [
+      {
+        id: inputId,
+        rawText,
+        inputType,
+        parsedSummary: "确认睡觉时间",
+        createdAt: now
+      },
+      ...state.inputs
+    ].slice(0, 60),
+    tasks: state.tasks.map((task) =>
+      task.id === targetTask.id
+        ? {
+            ...task,
+            title: "今晚24:00前睡觉",
+            horizon: "today",
+            dueAt: tonightSleepDueAt(),
+            priority: "medium",
+            energyRequired: "low",
+            updatedAt: now
+          }
+        : task
+    ),
+    checkIns: state.checkIns.map((checkIn) =>
+      checkIn.id === clarification.id ? { ...checkIn, status: "answered" as const } : checkIn
+    )
+  };
+
+  return {
+    state: addSleepReminderIfNeeded(updated, targetTask.id),
+    feedback: {
+      title: "已更新睡觉时间",
+      detail: "我已把这条待办更新为今晚 24:00 前睡觉，并把睡前提醒放在事项下面。"
+    }
+  };
+}
+
 function repairStoredLifeSemantics(state: AssistantState): AssistantState {
   const now = nowIso();
   let next = state;
+  const clarifiedSleepTask = next.tasks.find(
+    (task) => task.status !== "cancelled" && /(今晚|24[:：]?00|24点|二十四点|零点|0点).*睡/.test(task.title)
+  );
 
-  next = {
-    ...next,
-    tasks: next.tasks.map((task) => {
-      if (task.status === "cancelled" || !/12点前睡觉/.test(task.title)) return task;
-      const { dueAt: _dueAt, ...withoutDueAt } = task;
-      return {
-        ...withoutDueAt,
-        title: "今天12点前睡觉",
-        priority: "medium",
-        updatedAt: now
-      };
-    })
-  };
+  if (clarifiedSleepTask) {
+    next = {
+      ...next,
+      tasks: next.tasks
+        .filter((task) => task.id === clarifiedSleepTask.id || !/今天12点前睡觉/.test(task.title))
+        .map((task) =>
+          task.id === clarifiedSleepTask.id
+            ? {
+                ...task,
+                title: "今晚24:00前睡觉",
+                horizon: "today",
+                dueAt: tonightSleepDueAt(),
+                priority: "medium",
+                energyRequired: "low",
+                updatedAt: now
+              }
+            : task
+        ),
+      checkIns: next.checkIns.map((checkIn) =>
+        isSleepClarification(checkIn) ? { ...checkIn, status: "answered" as const } : checkIn
+      )
+    };
+    next = addSleepReminderIfNeeded(next, clarifiedSleepTask.id);
+  }
+
+  if (!clarifiedSleepTask) {
+    next = {
+      ...next,
+      tasks: next.tasks.map((task) => {
+        if (task.status === "cancelled" || !/12点前睡觉/.test(task.title)) return task;
+        const { dueAt: _dueAt, ...withoutDueAt } = task;
+        return {
+          ...withoutDueAt,
+          title: "今天12点前睡觉",
+          priority: "medium",
+          updatedAt: now
+        };
+      })
+    };
+  }
 
   const sleepTask = next.tasks.find((task) => task.status !== "cancelled" && /12点前睡觉/.test(task.title));
   if (sleepTask && !pendingCheckInExists(next, sleepTask.id, /睡觉|睡前|12点|十二点/)) {
@@ -349,6 +495,12 @@ export function useAssistantStore() {
   const actions = useMemo(
     () => ({
       async submitInput(rawText: string, inputType: "text" | "voice" = "text") {
+        const localResolution = resolveSleepClarification(state, rawText, inputType);
+        if (localResolution) {
+          setState(localResolution.state);
+          return localResolution.feedback;
+        }
+
         try {
           const response = await fetch("/api/ai/interpret", {
             method: "POST",
