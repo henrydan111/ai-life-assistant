@@ -94,7 +94,15 @@ export function validateNormalizedActionCount(raw: unknown, normalizedCount: num
 }
 
 export function validateUnderstanding(_rawText: string, understanding: IntentUnderstanding, raw: unknown) {
-  return validateAiInterpretationSchema(raw);
+  return validateAiInterpretationSchema(raw).filter((error) => !isMemoryWriteSchemaError(error));
+}
+
+function isMemoryWriteSchemaError(error: string) {
+  return /^memoryWrites\[\d+\]\.|^memory_writes\[\d+\]\.|^memoryWrites 必须是数组|^memory_writes 必须是数组/.test(error);
+}
+
+function validateAiInterpretationSchemaForPlanning(raw: unknown) {
+  return validateAiInterpretationSchema(raw).filter((error) => !isMemoryWriteSchemaError(error));
 }
 
 export function validateCoverage(_rawText: string, coverage: CoverageReview, raw: unknown) {
@@ -166,7 +174,7 @@ function validateRoutineGoalTargetTimes(actions: InterpretAction[]) {
 
 export function validateFinalInterpretation(rawText: string, interpretation: AiInterpretation, raw?: unknown) {
   return [
-    ...(raw === undefined ? [] : validateAiInterpretationSchema(raw)),
+    ...(raw === undefined ? [] : validateAiInterpretationSchemaForPlanning(raw)),
     ...validateActionArraySchema(interpretation.actions, "normalized_actions"),
     ...validateRoutineGoalTargetTimes(interpretation.actions),
     ...validateCoreIntentCoverage(rawText, interpretation.actions, interpretation.feedback.question, true),

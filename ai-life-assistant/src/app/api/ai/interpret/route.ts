@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
+import { confirmationTraceMeta, withoutConfirmationTrace } from "@/lib/ai/agentPlan/debugTrace";
 import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
 import { resolvePendingConfirmations } from "@/lib/confirmation/resolvePendingConfirmations";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
@@ -37,17 +38,6 @@ function requestMeta(body: InterpretRequest) {
     clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : undefined,
     baseRevision: typeof body.baseRevision === "number" ? body.baseRevision : undefined
   };
-}
-
-function confirmationTraceMeta(body: InterpretRequest, confirmation: ReturnType<typeof resolvePendingConfirmations>) {
-  return body.debugTrace === true && confirmation?.confirmationTrace
-    ? { confirmationTrace: confirmation.confirmationTrace }
-    : {};
-}
-
-function withoutConfirmationTrace<T extends { confirmationTrace?: unknown }>(value: T) {
-  const { confirmationTrace: _confirmationTrace, ...rest } = value;
-  return rest;
 }
 
 export async function POST(request: Request) {

@@ -13,6 +13,7 @@ const { parseAiInterpretation, validateAiInterpretationSchema } = jiti("../src/l
 const { validateCoverage, validateFinalInterpretation } = jiti("../src/lib/ai/agentPlan/validators.ts");
 const { actionText } = jiti("../src/lib/ai/agentPlan/actionText.ts");
 const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWithTrace } = jiti("../src/lib/ai/agentPlan/postProcess.ts");
+const { confirmationTraceMeta, withoutConfirmationTrace } = jiti("../src/lib/ai/agentPlan/debugTrace.ts");
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
 const {
@@ -1485,6 +1486,100 @@ const evals = [
     }
   },
   {
+    name: "Agent Plan post-processing does not turn date-only milk into noon",
+    run() {
+      const rawText = "明天买牛奶";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: {
+          title: "明天中午买牛奶",
+          detail: "我已帮你安排明天中午买牛奶。",
+          question: "是否需要明天中午提醒你买牛奶？"
+        },
+        actions: [
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed",
+            createTask: true,
+            dueAt: "2026-01-02T12:00:00+08:00"
+          },
+          {
+            type: "add_task",
+            ref: "milk_task",
+            title: "买牛奶",
+            dueAt: "2026-01-02T12:00:00+08:00"
+          }
+        ],
+        memoryWrites: []
+      });
+      const visibleFeedback = [
+        result.interpretation.feedback.title,
+        result.interpretation.feedback.detail,
+        result.interpretation.feedback.question
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const shopping = result.interpretation.actions.find((action) => action.type === "add_shopping_item" && /牛奶/.test(action.itemName));
+      const task = result.interpretation.actions.find((action) => action.type === "add_task" && /牛奶/.test(actionText(action)));
+
+      assert.ok(shopping);
+      assert.equal(shopping.dueAt, undefined);
+      assert.ok(task);
+      assert.equal(task.dueAt, undefined);
+      assert.doesNotMatch(visibleFeedback, /明天中午|12点|十二点|午饭前/);
+      assert.equal(result.trace.some((item) => item.rule === "temporal.repair.remove_unsupported_milk_due_at"), true);
+      assert.equal(result.trace.some((item) => item.rule === "temporal.repair.remove_unsupported_milk_shopping_due_at"), true);
+      assert.equal(result.trace.some((item) => item.rule === "feedback.repair.remove_unsafe_default_confirmation"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing does not force weak shopping intent into purchase task",
+    run() {
+      const rawText = "提醒我问室友要不要买牛奶";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已整理", detail: "已记录需要确认牛奶。" },
+        actions: [
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed"
+          }
+        ],
+        memoryWrites: []
+      });
+      const shopping = result.interpretation.actions.find((action) => action.type === "add_shopping_item" && /牛奶/.test(action.itemName));
+
+      assert.ok(shopping);
+      assert.equal(shopping.createTask, undefined);
+      assert.equal(result.trace.some((item) => item.rule === "shopping.repair.ensure_purchase_task"), false);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "confirmation trace is omitted unless debugTrace is requested",
+    run() {
+      const result = {
+        state: createState(),
+        feedback: { title: "已更新确认信息", detail: "已更新。" },
+        confirmationTrace: [
+          {
+            rule: "confirmation.routine_goal_target_time",
+            outcome: "matched",
+            segment: "晚上12点",
+            confidence: 0.9
+          }
+        ]
+      };
+
+      assert.equal("confirmationTrace" in confirmationTraceMeta({}, result), false);
+      assert.deepEqual(confirmationTraceMeta({ debugTrace: true }, result).confirmationTrace, result.confirmationTrace);
+      assert.equal("confirmationTrace" in withoutConfirmationTrace(result), false);
+    }
+  },
+  {
     name: "AI final validation allows sleep 12 clarification alongside coarse weekend travel",
     run() {
       const rawText = "我最近都希望每天能12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶。我这周末计划要去上海";
@@ -2054,6 +2149,67 @@ const evals = [
       assert.match(errors, /actions\[1\]\.status/);
       assert.match(errors, /memoryWrites\[0\]\.confidence/);
       assert.match(errors, /memoryWrites\[0\]\.requiresConfirmation/);
+    }
+  },
+  {
+    name: "AI final validation ignores invalid memory writes after dropping them",
+    run() {
+      const rawText = "我最近都希望每天能12点前睡觉，然后家里牛奶快没了，提醒我要买牛奶。我这周末计划要去上海";
+      const raw = {
+        feedback: { title: "已整理", detail: "已记录睡眠目标、牛奶和上海安排。" },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天按时睡觉",
+            cadence: "daily",
+            scope: "recent",
+            scopeLabel: "最近"
+          },
+          {
+            type: "add_check_in",
+            title: "确认睡眠目标时间",
+            question: "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+            relatedType: "routine_goal",
+            relatedRef: "sleep_routine",
+            clarification: { slot: "routine_goal_target_time", targetField: "targetTime", expectedAnswerKind: "time" }
+          },
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed",
+            createTask: true
+          },
+          {
+            type: "add_life_event",
+            ref: "shanghai_trip",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海"
+          },
+          {
+            type: "add_check_in",
+            title: "确认出行时间",
+            question: "这周末去上海，具体是哪天、几点出发？",
+            relatedType: "life_event",
+            relatedRef: "shanghai_trip",
+            clarification: { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" }
+          }
+        ],
+        memoryWrites: [
+          {
+            type: "routine_goal",
+            summary: "用户希望最近每天按时睡觉。",
+            confidence: 0.8,
+            evidence: "用户说最近都希望每天能12点前睡觉"
+          }
+        ]
+      };
+      const parsed = parseAiInterpretation(raw);
+      assert.match(parsed.errors.join(" "), /memoryWrites\[0\]\.type/);
+      assert.equal(parsed.value.memoryWrites.length, 0);
+      assert.deepEqual(validateFinalInterpretation(rawText, parsed.value, raw), []);
     }
   },
   {

@@ -82,9 +82,9 @@ function segmentMentioning(rawText: string, pattern: RegExp) {
   return rawText.split(/然后|另外|还有|并且|到时候|[，。,.!?！？；;]/).find((segment) => pattern.test(segment)) ?? rawText;
 }
 
-function hasExplicitReminderTime(rawText: string, pattern: RegExp) {
+function hasExplicitReminderTimeOfDay(rawText: string, pattern: RegExp) {
   const segment = segmentMentioning(rawText, pattern);
-  return /(今天|明天|后天|今晚|明早|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：))/.test(segment);
+  return /(今晚|明早|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：))/.test(segment);
 }
 
 function rawHasCoarseWeekendTravel(rawText: string) {
@@ -107,7 +107,7 @@ const unsafeClarificationQuestionPattern =
   /(确认日常目标|你要设置的日常目标|长期保持|试一段时间|短期目标还是长期目标|明天中午|明天\s*(?:12\s*点|十二点|午饭前|午餐前)|周日下午2点|本?周日\s*14\s*点|下午\s*(?:2|二|两)\s*点|14\s*(?::|：|点)\s*(?:00|30|半)?)/;
 
 function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
-  if (!/牛奶/.test(rawText) || !/(买|需要|没有|没了|缺|快没了|提醒)/.test(rawText) || hasExplicitReminderTime(rawText, /牛奶/)) {
+  if (!/牛奶/.test(rawText) || !/(买|需要|没有|没了|缺|快没了|提醒)/.test(rawText) || hasExplicitReminderTimeOfDay(rawText, /牛奶/)) {
     return interpretation;
   }
 
@@ -150,7 +150,10 @@ function ensureShoppingPurchaseTasks(rawText: string, interpretation: AiInterpre
       return action;
     }
     const segment = segmentMentioning(rawText, new RegExp(escapeRegExp(action.itemName)));
-    if (!/(提醒|买|购买|采购|需要|没有|没了|缺|快没了|补货)/.test(segment) || /(不要|不用|别|取消|不需要)/.test(segment)) {
+    if (
+      !/(提醒|买|购买|采购|需要|没有|没了|缺|快没了|补货)/.test(segment) ||
+      /(不要|不用|别|取消|不需要|问|看看|确认|是否|要不要|需不需要|室友|别人|家人)/.test(segment)
+    ) {
       return action;
     }
     const repaired = { ...action, createTask: true };
@@ -230,7 +233,7 @@ function removeUnsupportedCoarseWeekendTravelTimes(rawText: string, interpretati
 }
 
 function hasUnsafeMilkReminderText(rawText: string, text: string) {
-  return /牛奶/.test(rawText) && !hasExplicitReminderTime(rawText, /牛奶/) && unsafeMilkReminderTimePattern.test(text);
+  return /牛奶/.test(rawText) && !hasExplicitReminderTimeOfDay(rawText, /牛奶/) && unsafeMilkReminderTimePattern.test(text);
 }
 
 function hasUnsafeCoarseWeekendTravelText(rawText: string, text: string) {
