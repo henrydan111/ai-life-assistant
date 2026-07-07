@@ -22,3 +22,12 @@ export type AgentPlanChatCompletionRequest = {
 };
 
 export type ProgressReporter = (update: AiProcessingUpdate) => void;
+
+export type PlanTrace = {
+  rule: string;
+  severity: "info" | "repair" | "clarification" | "blocked";
+  sourceQuote?: string;
+  before?: unknown;
+  after?: unknown;
+  reason: string;
+};

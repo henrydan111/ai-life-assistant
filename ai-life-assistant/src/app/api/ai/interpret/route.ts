@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
+import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { AssistantState, TranscriptRepair } from "@/types/domain";
 
@@ -60,9 +61,6 @@ export async function POST(request: Request) {
     });
   } catch (error) {
     console.warn("Agent Plan interpretation failed.", error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : "AI interpretation failed." },
-      { status: 502 }
-    );
+    return NextResponse.json(buildSafePlanningFailureResult(body.state, body.model));
   }
 }

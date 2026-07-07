@@ -10,6 +10,7 @@ import type {
 } from "@/types/domain";
 import { createId } from "@/lib/id";
 import { dayBeforeAt, isSameLocalDay, nowIso, parseDueDate } from "@/lib/time/parseTime";
+import { resolveRecurringSleepTarget } from "@/lib/ai/agentPlan/temporalPolicy";
 
 type ParseResult = {
   state: AssistantState;
@@ -71,15 +72,6 @@ function taskTitleFromInput(text: string) {
 function titleCase(text: string) {
   if (/[\u4e00-\u9fa5]/.test(text)) return text;
   return text.charAt(0).toUpperCase() + text.slice(1);
-}
-
-function sleepTargetTime(text: string) {
-  if (/(半夜|午夜|零点|0点|24点|二十四点)/.test(text)) return "00:00";
-  const match = text.match(/(\d{1,2}|十二|二十四)\s*点\s*前/);
-  if (!match) return undefined;
-  const value = match[1] === "十二" ? 12 : match[1] === "二十四" ? 24 : Number(match[1]);
-  if (!Number.isFinite(value)) return undefined;
-  return `${String(value % 24).padStart(2, "0")}:00`;
 }
 
 function isRecurringSleepInput(text: string) {
@@ -289,7 +281,8 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
   }
 
   if (isRecurringSleepInput(text)) {
-    const targetTime = sleepTargetTime(text);
+    const resolution = resolveRecurringSleepTarget(text);
+    const targetTime = resolution.targetTime;
     const isRecent = /最近|近期|这段时间/.test(text);
     const title = targetTime ? `每天 ${targetTime} 前睡觉` : "每天按时睡觉";
     const existing = findSimilarRoutineGoal(next.routineGoals, title, "daily", targetTime);
@@ -298,7 +291,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
       title,
       cadence: "daily",
       targetTime,
-      targetTimeRelation: targetTime ? "before" : undefined,
+      targetTimeRelation: targetTime ? (resolution.targetTimeRelation ?? "before") : undefined,
       scope: isRecent ? "recent" : "ongoing",
       scopeLabel: isRecent ? "最近" : undefined,
       priority: "medium",
@@ -311,11 +304,16 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
     const routineGoals = existing
       ? next.routineGoals.map((item) => (item.id === existing.id ? { ...item, ...goal } : item))
       : [goal, ...next.routineGoals];
-    const question = isRecent ? "这个睡眠目标你想从今天开始执行，还是先试一段时间？" : undefined;
+    const question =
+      resolution.ambiguity === "ampm"
+        ? (resolution.question ?? "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？")
+        : isRecent
+          ? "这个睡眠目标你想从今天开始执行，还是先试一段时间？"
+          : undefined;
     const checkIn: AssistantCheckIn | undefined = question
       ? {
           id: createId("check"),
-          title: "确认睡眠目标范围",
+          title: resolution.ambiguity === "ampm" ? "确认睡眠目标时间" : "确认睡眠目标范围",
           question,
           relatedType: "routine_goal",
           relatedId: goal.id,

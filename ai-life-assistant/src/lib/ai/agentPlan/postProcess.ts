@@ -1,6 +1,8 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
 import type { AssistantState } from "@/types/domain";
 import { actionText } from "./actionText";
+import { rawHasRecurringSleepGoal, resolveRecurringSleepTarget } from "./temporalPolicy";
+import type { PlanTrace } from "./types";
 import {
   containsMultipleTravelPrepCategories,
   ensureMentionedTravelDraft,
@@ -103,33 +105,112 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
   return { ...interpretation, actions };
 }
 
-function rawHasRecurringSleepGoal(rawText: string) {
-  return /(每天|每日|天天|每晚|daily|every day|every night)/i.test(rawText) && /(睡觉|睡|上床|休息)/.test(rawText);
+function isRecurringSleepTask(action: InterpretAction) {
+  return (
+    action.type === "add_task" &&
+    /(每天|每日|天天|每晚|daily|every day|every night)/i.test(actionText(action)) &&
+    /(睡觉|睡|上床|休息)/.test(actionText(action))
+  );
 }
 
-function sleepTargetTime(rawText: string) {
-  if (/(半夜|午夜|零点|0点|24点|二十四点)/.test(rawText)) return "00:00";
-  const match = rawText.match(/(\d{1,2}|十[一二]?|十二|二十[一二三]?|二十四)\s*点\s*前/);
-  if (!match) return undefined;
-  const value = match[1];
-  const hour =
-    value === "十二"
-      ? 12
-      : value === "十一"
-        ? 11
-        : value === "二十四"
-          ? 24
-          : value.startsWith("二十")
-            ? 20 + (value.endsWith("一") ? 1 : value.endsWith("二") ? 2 : value.endsWith("三") ? 3 : 0)
-            : Number(value);
-  if (!Number.isFinite(hour)) return undefined;
-  return `${String(hour % 24).padStart(2, "0")}:00`;
+function removeDuplicateRecurringSleepTasks(actions: InterpretAction[], trace: PlanTrace[]) {
+  return actions.filter((action) => {
+    if (!isRecurringSleepTask(action)) return true;
+    trace.push({
+      rule: "routine.repair.remove_duplicate_task",
+      severity: "repair",
+      before: action,
+      reason: "Recurring sleep goals should be represented as RoutineGoal, not as a one-time Task."
+    });
+    return false;
+  });
 }
 
-function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretation): AiInterpretation {
+function ensureRoutineCheckIn(
+  actions: InterpretAction[],
+  ref: string,
+  title: string,
+  question: string,
+  trace: PlanTrace[],
+  rule: string,
+  existingPattern: RegExp
+): InterpretAction[] {
+  const exists = actions.some(
+    (action) =>
+      action.type === "add_check_in" &&
+      action.relatedType === "routine_goal" &&
+      action.relatedRef === ref &&
+      (action.question === question || existingPattern.test(actionText(action)))
+  );
+  if (exists) return actions;
+
+  trace.push({
+    rule,
+    severity: "clarification",
+    after: { title, question, relatedType: "routine_goal", relatedRef: ref },
+    reason: "Routine goal has a safe-to-save missing slot that should be clarified instead of guessed."
+  });
+  const checkIn: InterpretAction = {
+    type: "add_check_in",
+    title,
+    question,
+    relatedType: "routine_goal",
+    relatedRef: ref
+  };
+  return [...actions, checkIn];
+}
+
+function normalizeRoutineGoalAction(
+  rawText: string,
+  action: Extract<InterpretAction, { type: "add_routine_goal" }>,
+  trace: PlanTrace[]
+): Extract<InterpretAction, { type: "add_routine_goal" }> {
+  const resolution = resolveRecurringSleepTarget(rawText);
+  const isRecent = /最近|近期|这段时间/.test(rawText);
+  let normalized: Extract<InterpretAction, { type: "add_routine_goal" }> = {
+    ...action,
+    cadence: "daily",
+    targetTime: resolution.ambiguity === "ampm" ? undefined : (resolution.targetTime ?? action.targetTime),
+    targetTimeRelation:
+      resolution.ambiguity === "ampm" ? undefined : (resolution.targetTimeRelation ?? action.targetTimeRelation),
+    scope: isRecent && (!action.scope || action.scope === "unspecified") ? "recent" : action.scope,
+    scopeLabel: isRecent ? "最近" : action.scopeLabel
+  };
+
+  if (resolution.evidence === "explicit_midnight" && action.targetTime && action.targetTime !== "00:00") {
+    trace.push({
+      rule: "temporal.sleep.explicit_midnight_repair",
+      severity: "repair",
+      sourceQuote: resolution.sourceQuote,
+      before: { targetTime: action.targetTime },
+      after: { targetTime: "00:00" },
+      reason: "Raw text explicitly points to midnight or 24:00."
+    });
+    normalized = {
+      ...normalized,
+      targetTime: "00:00",
+      targetTimeRelation: resolution.targetTimeRelation ?? action.targetTimeRelation ?? "before"
+    };
+  }
+
+  if (resolution.ambiguity === "ampm" && action.targetTime) {
+    trace.push({
+      rule: "temporal.sleep.bare_12_requires_clarification",
+      severity: "clarification",
+      sourceQuote: resolution.sourceQuote,
+      before: { targetTime: action.targetTime },
+      after: { targetTime: undefined },
+      reason: "Bare sleep time '12点前' should not be silently saved as noon or midnight."
+    });
+  }
+
+  return normalized;
+}
+
+function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
   if (!rawHasRecurringSleepGoal(rawText)) return interpretation;
   const isRecent = /最近|近期|这段时间/.test(rawText);
-  const targetTime = sleepTargetTime(rawText);
+  const resolution = resolveRecurringSleepTarget(rawText);
   const existingIndex = interpretation.actions.findIndex(
     (action) => action.type === "add_routine_goal" && /(睡觉|睡|上床|休息)/.test(actionText(action))
   );
@@ -137,46 +218,41 @@ function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretat
   if (existingIndex >= 0) {
     let actions = interpretation.actions.map((action, index) => {
       if (index !== existingIndex || action.type !== "add_routine_goal") return action;
-      const normalized: Extract<InterpretAction, { type: "add_routine_goal" }> = {
-        ...action,
-        cadence: "daily",
-        targetTime: action.targetTime ?? targetTime,
-        targetTimeRelation: action.targetTimeRelation ?? (targetTime ? "before" : undefined),
-        scope: isRecent && (!action.scope || action.scope === "unspecified") ? "recent" : action.scope,
-        scopeLabel: isRecent ? "最近" : action.scopeLabel
-      };
-      return normalized;
+      return normalizeRoutineGoalAction(rawText, action, trace);
     });
 
-    if (isRecent) {
-      const withRef = ensureActionRef(actions, existingIndex, "sleep_routine");
-      actions = withRef.actions;
-      const ref = withRef.ref;
-      const hasScopeCheckIn =
-        ref &&
-        actions.some(
-          (action) =>
-            action.type === "add_check_in" &&
-            action.relatedType === "routine_goal" &&
-            action.relatedRef === ref &&
-            /(从今天|开始|试|多久|持续|长期|最近|范围)/.test(actionText(action))
-        );
-      if (ref && !hasScopeCheckIn) {
-        actions.push({
-          type: "add_check_in",
-          title: "确认睡眠目标范围",
-          question: "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
-          relatedType: "routine_goal",
-          relatedRef: ref
-        });
-      }
+    const withRef = ensureActionRef(actions, existingIndex, "sleep_routine");
+    actions = withRef.actions;
+    const ref = withRef.ref;
+    if (ref && resolution.ambiguity === "ampm") {
+      actions = ensureRoutineCheckIn(
+        actions,
+        ref,
+        "确认睡眠目标时间",
+        resolution.question ?? "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+        trace,
+        "clarification.compiler.create_sleep_time_question",
+        /(中午|午夜|晚上|半夜|12点|十二点)/
+      );
+    } else if (ref && isRecent) {
+      actions = ensureRoutineCheckIn(
+        actions,
+        ref,
+        "确认睡眠目标范围",
+        "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
+        trace,
+        "clarification.compiler.create_scope_question",
+        /(从今天|开始|试|多久|持续|长期|最近|范围)/
+      );
     }
 
+    actions = removeDuplicateRecurringSleepTasks(actions, trace);
     return { ...interpretation, actions };
   }
 
   let actions = interpretation.actions;
   const ref = uniqueRef(actions, "sleep_routine");
+  const targetTime = resolution.ambiguity === "ampm" ? undefined : resolution.targetTime;
   actions = [
     {
       type: "add_routine_goal",
@@ -184,24 +260,44 @@ function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretat
       title: targetTime ? `每天 ${targetTime} 前睡觉` : "每天按时睡觉",
       cadence: "daily",
       targetTime,
-      targetTimeRelation: targetTime ? "before" : undefined,
+      targetTimeRelation: targetTime ? (resolution.targetTimeRelation ?? "before") : undefined,
       scope: isRecent ? "recent" : "ongoing",
       scopeLabel: isRecent ? "最近" : undefined,
       priority: "medium"
     },
     ...actions
   ];
+  trace.push({
+    rule: "routine.compiler.create_goal",
+    severity: "info",
+    sourceQuote: rawText,
+    after: actions[0],
+    reason: "Raw text contains a recurring sleep goal that should be represented as a RoutineGoal."
+  });
 
-  if (isRecent) {
-    actions.push({
-      type: "add_check_in",
-      title: "确认睡眠目标范围",
-      question: "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
-      relatedType: "routine_goal",
-      relatedRef: ref
-    });
+  if (resolution.ambiguity === "ampm") {
+    actions = ensureRoutineCheckIn(
+      actions,
+      ref,
+      "确认睡眠目标时间",
+      resolution.question ?? "你说的 12 点前，是中午 12 点，还是晚上/午夜 12 点？",
+      trace,
+      "clarification.compiler.create_sleep_time_question",
+      /(中午|午夜|晚上|半夜|12点|十二点)/
+    );
+  } else if (isRecent) {
+    actions = ensureRoutineCheckIn(
+      actions,
+      ref,
+      "确认睡眠目标范围",
+      "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
+      trace,
+      "clarification.compiler.create_scope_question",
+      /(从今天|开始|试|多久|持续|长期|最近|范围)/
+    );
   }
 
+  actions = removeDuplicateRecurringSleepTasks(actions, trace);
   return { ...interpretation, actions };
 }
 
@@ -246,11 +342,26 @@ export function postProcessAgentPlanInterpretation(
   state: AssistantState,
   interpretation: AiInterpretation
 ): AiInterpretation {
+  return postProcessAgentPlanInterpretationWithTrace(rawText, state, interpretation).interpretation;
+}
+
+export function postProcessAgentPlanInterpretationWithTrace(
+  rawText: string,
+  state: AssistantState,
+  interpretation: AiInterpretation
+) {
+  const trace: PlanTrace[] = [...(interpretation.planTrace ?? [])];
   let next = splitCombinedTravelPrepCheckIns(interpretation);
-  next = ensureRecurringSleepGoal(rawText, next);
+  next = ensureRecurringSleepGoal(rawText, next, trace);
   next = ensureMentionedTravelDraft(rawText, next);
   next = ensureMentionedTravelPrepCheckIns(rawText, next);
   next = ensureLeaveBossCheckIn(rawText, next);
   next = repairExistingRelatedRefs(state, next);
-  return next;
+  return {
+    interpretation: {
+      ...next,
+      planTrace: trace
+    },
+    trace
+  };
 }

@@ -304,6 +304,38 @@ const scenarios = [
     ]
   },
   {
+    id: "routine_sleep_bare_12_ambiguous",
+    title: "节奏目标：最近每天 12 点前睡觉需要确认上午/午夜",
+    tags: ["smoke", "routine", "clarification", "temporal"],
+    minScoreRatio: 1,
+    state: () => createState(),
+    steps: [
+      {
+        rawText: "我最近希望能够每天12点前睡觉。",
+        expectations: [
+          expect("保存为 routine goal，不生成一次性睡觉任务", 3, ({ after }) => {
+            const goals = activeRoutineGoals(after, /睡觉|睡|休息/);
+            const sleepTasks = activeTasks(after, /睡觉|睡|休息/);
+            if (goals.length !== 1) return `routineGoals=${goals.length}`;
+            return sleepTasks.length === 0 || `不应创建一次性睡觉任务：${sleepTasks.map(itemText).join(" | ")}`;
+          }),
+          expect("不能静默保存为 12:00", 3, ({ after }) => {
+            const goal = activeRoutineGoals(after, /睡觉|睡|休息/)[0];
+            if (!goal) return "缺少睡眠节奏目标";
+            return !goal.targetTime || goal.targetTime !== "12:00" || `targetTime=${goal.targetTime}`;
+          }),
+          expect("追问 12 点是中午还是晚上/午夜", 2, ({ after, feedback }) => {
+            const text = [feedback.question, ...after.checkIns.map(itemText)].filter(Boolean).join(" ");
+            const hasRoutineCheck = after.checkIns.some(
+              (checkIn) => checkIn.relatedType === "routine_goal" && /(中午|晚上|午夜|半夜|12点|十二点)/.test(itemText(checkIn))
+            );
+            return hasRoutineCheck && /(中午|晚上|午夜|半夜|12点|十二点)/.test(text) ? true : "缺少 12 点歧义确认";
+          })
+        ]
+      }
+    ]
+  },
+  {
     id: "complex_life_admin",
     title: "复合生活输入：睡觉、请假、上海行程与行前提醒",
     tags: ["smoke", "multi-intent", "travel", "clarification"],
@@ -614,6 +646,7 @@ async function runStep({ scenario, step, state, model, repeatIndex, stepIndex })
         feedback: applied.feedback,
         actions: summarizeActions(interpretation.actions),
         memoryWrites: interpretation.memoryWrites,
+        planTrace: interpretation.planTrace ?? [],
         progress,
         expectations: expectationResults,
         finalState: summarizeState(after)

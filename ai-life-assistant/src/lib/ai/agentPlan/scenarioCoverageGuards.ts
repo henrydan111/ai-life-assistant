@@ -1,5 +1,6 @@
 import type { InterpretAction } from "@/lib/ai/interpretation";
 import { actionText } from "./actionText";
+import { rawHasRecurringSleepGoal, resolveRecurringSleepTarget } from "./temporalPolicy";
 import { hasSeparateTravelPrepCheckIn, travelPrepCategoriesIn } from "./travelPrepPolicy";
 
 function rawHasAmbiguousSleepDeadline(rawText: string) {
@@ -12,10 +13,6 @@ function rawHasAmbiguousSleepDeadline(rawText: string) {
       const hasDisambiguator = /(中午|上午|下午|晚上|今晚|凌晨|零点|0点|24点|二十四点|半夜|午夜)/.test(segment);
       return mentionsSleep && mentionsTwelveBefore && !hasDisambiguator;
     });
-}
-
-function rawHasRecurringSleepGoal(rawText: string) {
-  return /(每天|每日|天天|每晚|daily|every day|every night)/i.test(rawText) && /(睡觉|睡|上床|休息)/.test(rawText);
 }
 
 function rawHasThursdayFridayLeave(rawText: string) {
@@ -76,11 +73,33 @@ export function validateCoreIntentCoverage(rawText: string, actions: InterpretAc
   }
 
   if (rawHasRecurringSleepGoal(rawText)) {
+    const resolution = resolveRecurringSleepTarget(rawText);
     const hasRoutineGoal = actions.some(
       (action) => action.type === "add_routine_goal" && /(睡觉|睡|上床|休息)/.test(actionText(action))
     );
     if (!hasRoutineGoal) {
       errors.push("原文包含重复睡眠目标，最终 actions 必须用 add_routine_goal 承接每天/每晚的循环语义。");
+    }
+    const duplicateSleepTasks = actions.filter(
+      (action) =>
+        action.type === "add_task" &&
+        /(每天|每日|天天|每晚|daily|every day|every night)/i.test(actionText(action)) &&
+        /(睡觉|睡|上床|休息)/.test(actionText(action))
+    );
+    if (duplicateSleepTasks.length) {
+      errors.push("重复睡眠目标不能同时创建 add_routine_goal 和同语义 add_task。");
+    }
+    if (resolution.ambiguity === "ampm") {
+      const sleepRoutineGoals = actions.filter(
+        (action): action is Extract<InterpretAction, { type: "add_routine_goal" }> =>
+          action.type === "add_routine_goal" && /(睡觉|睡|上床|休息)/.test(actionText(action))
+      );
+      if (sleepRoutineGoals.some((action) => Boolean(action.targetTime))) {
+        errors.push("“每天12点前睡觉”缺少中午/午夜上下文，确认前 routine goal 不应写入具体 targetTime。");
+      }
+      if (!/(中午|晚上|午夜|半夜|12点|十二点)/.test(combinedText)) {
+        errors.push("“每天12点前睡觉”需要在 feedback.question 或 add_check_in 中追问中午/晚上/午夜。");
+      }
     }
   }
 

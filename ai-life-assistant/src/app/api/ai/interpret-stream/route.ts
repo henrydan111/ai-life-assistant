@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { applyInterpretation } from "@/lib/ai/applyInterpretation";
 import { canUseAgentPlan, interpretWithAgentPlan, resolveAgentPlanLanguageModel } from "@/lib/ai/agentPlan";
+import { buildSafePlanningFailureResult } from "@/lib/ai/agentPlan/safeFailure";
 import { parseLocalInput } from "@/lib/parser/parseLocalInput";
 import type { AiProcessingUpdate, AssistantState, TranscriptRepair } from "@/types/domain";
 
@@ -128,17 +129,24 @@ export async function POST(request: Request) {
         });
       } catch (error) {
         console.warn("Agent Plan streamed interpretation failed.", error);
-        const message = error instanceof Error ? error.message : "AI interpretation failed.";
+        const result = buildSafePlanningFailureResult(state, model);
         sendProgress({
           stage: "saving",
-          status: "error",
-          title: "处理失败",
-          detail: message
+          status: "attention",
+          title: "没有保存事项",
+          detail: result.feedback.detail
+        });
+        sendProgress({
+          stage: "done",
+          status: "attention",
+          title: result.feedback.title,
+          detail: result.feedback.detail
         });
         streamLine(controller, encoder, {
+          ...result,
           type: "result",
-          provider: "volcengine_agent_plan_runtime",
-          error: message
+          provider: result.provider,
+          model: result.model
         });
       } finally {
         controller.close();

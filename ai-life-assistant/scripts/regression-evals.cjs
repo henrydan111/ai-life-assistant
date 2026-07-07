@@ -12,7 +12,9 @@ const { applyInterpretation } = jiti("../src/lib/ai/applyInterpretation.ts");
 const { parseAiInterpretation, validateAiInterpretationSchema } = jiti("../src/lib/ai/interpretation.ts");
 const { validateCoverage, validateFinalInterpretation } = jiti("../src/lib/ai/agentPlan/validators.ts");
 const { actionText } = jiti("../src/lib/ai/agentPlan/actionText.ts");
-const { postProcessAgentPlanInterpretation } = jiti("../src/lib/ai/agentPlan/postProcess.ts");
+const { postProcessAgentPlanInterpretation, postProcessAgentPlanInterpretationWithTrace } = jiti("../src/lib/ai/agentPlan/postProcess.ts");
+const { buildSafePlanningFailureResult, safePlanningFailureProvider } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
+const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
 const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
@@ -165,6 +167,19 @@ const evals = [
     }
   },
   {
+    name: "safe planning failure keeps state unchanged and hides validation diagnostics",
+    run() {
+      const state = createState();
+      const result = buildSafePlanningFailureResult(state, "deepseek-v4-flash");
+
+      assert.equal(result.provider, safePlanningFailureProvider);
+      assert.equal(result.state, state);
+      assert.match(result.feedback.detail, /没有修改|避免记错/);
+      assert.doesNotMatch(result.feedback.title, /validation|schema|failed/i);
+      assert.doesNotMatch(result.feedback.detail, /validation|schema|failed|actions\[/i);
+    }
+  },
+  {
     name: "local fallback saves recent daily sleep as a routine goal",
     run() {
       const result = parseLocalInput("我最近希望能够每天半夜12点前睡觉。", createState(), "text");
@@ -183,6 +198,38 @@ const evals = [
             checkIn.relatedType === "routine_goal" &&
             checkIn.relatedId === goals[0].id &&
             /从今天|试|多久|开始/.test(`${checkIn.title} ${checkIn.question}`)
+        ),
+        true
+      );
+    }
+  },
+  {
+    name: "temporal policy treats bare recurring sleep 12 as ambiguous",
+    run() {
+      const resolution = resolveRecurringSleepTarget("我最近希望每天12点前睡觉。");
+
+      assert.equal(resolution.ambiguity, "ampm");
+      assert.equal(resolution.targetTime, undefined);
+      assert.match(resolution.question, /中午|晚上|午夜/);
+    }
+  },
+  {
+    name: "local fallback asks before saving bare recurring sleep target time",
+    run() {
+      const result = parseLocalInput("我最近希望每天12点前睡觉。", createState(), "text");
+      const goals = activeRoutineGoals(result.state, /睡觉|睡|休息/);
+
+      assert.equal(goals.length, 1);
+      assert.equal(goals[0].targetTime, undefined);
+      assert.equal(goals[0].targetTimeRelation, undefined);
+      assert.equal(activeTasks(result.state, /睡觉|睡|休息/).length, 0);
+      assert.match(result.feedback.question, /中午|晚上|午夜/);
+      assert.equal(
+        result.state.checkIns.some(
+          (checkIn) =>
+            checkIn.relatedType === "routine_goal" &&
+            checkIn.relatedId === goals[0].id &&
+            /中午|晚上|午夜/.test(`${checkIn.title} ${checkIn.question}`)
         ),
         true
       );
@@ -328,6 +375,95 @@ const evals = [
       assert.ok(checkIn);
       assert.equal(checkIn.relatedRef, goal.ref);
       assert.deepEqual(validateFinalInterpretation(rawText, result), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing removes duplicate recurring sleep task",
+    run() {
+      const rawText = "我最近希望能够每天半夜12点前睡觉。";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已记录", detail: "已记录睡眠目标。" },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天半夜12点前睡觉",
+            cadence: "daily",
+            targetTime: "00:00",
+            targetTimeRelation: "before",
+            scope: "recent"
+          },
+          { type: "add_task", title: "每天半夜12点前睡觉" }
+        ],
+        memoryWrites: []
+      });
+
+      assert.equal(result.interpretation.actions.filter((action) => action.type === "add_task" && /睡觉|睡/.test(actionText(action))).length, 0);
+      assert.equal(
+        result.interpretation.actions.filter((action) => action.type === "add_routine_goal" && /睡觉|睡/.test(actionText(action))).length,
+        1
+      );
+      assert.equal(result.trace.some((item) => item.rule === "routine.repair.remove_duplicate_task"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing repairs explicit midnight routine time",
+    run() {
+      const rawText = "我最近希望能够每天半夜12点前睡觉。";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已记录", detail: "已记录睡眠目标。" },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天半夜12点前睡觉",
+            cadence: "daily",
+            targetTime: "12:00",
+            targetTimeRelation: "before",
+            scope: "unspecified"
+          }
+        ],
+        memoryWrites: []
+      });
+      const goal = result.interpretation.actions.find((action) => action.type === "add_routine_goal");
+
+      assert.ok(goal);
+      assert.equal(goal.targetTime, "00:00");
+      assert.equal(goal.scope, "recent");
+      assert.equal(result.trace.some((item) => item.rule === "temporal.sleep.explicit_midnight_repair"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing clarifies bare recurring sleep 12 instead of saving noon",
+    run() {
+      const rawText = "我最近希望能够每天12点前睡觉。";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已记录", detail: "已记录睡眠目标。" },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天12点前睡觉",
+            cadence: "daily",
+            targetTime: "12:00",
+            targetTimeRelation: "before",
+            scope: "recent"
+          }
+        ],
+        memoryWrites: []
+      });
+      const goal = result.interpretation.actions.find((action) => action.type === "add_routine_goal");
+      const checkIn = result.interpretation.actions.find((action) => action.type === "add_check_in" && action.relatedType === "routine_goal");
+
+      assert.ok(goal);
+      assert.equal(goal.targetTime, undefined);
+      assert.equal(goal.targetTimeRelation, undefined);
+      assert.ok(checkIn);
+      assert.match(actionText(checkIn), /中午|晚上|午夜/);
+      assert.equal(result.trace.some((item) => item.rule === "temporal.sleep.bare_12_requires_clarification"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
     }
   },
   {
@@ -593,6 +729,31 @@ const evals = [
       assert.equal(parsed.errors.length, 0);
       assert.deepEqual(validateAiInterpretationSchema(raw), []);
       assert.deepEqual(validateFinalInterpretation("我最近希望能够每天半夜12点前睡觉。", parsed.value, raw), []);
+    }
+  },
+  {
+    name: "AI final validation rejects invalid normalized routine targetTime",
+    run() {
+      const raw = {
+        feedback: { title: "已记录", detail: "已记录睡眠节奏。" },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_routine",
+            title: "每天睡觉",
+            cadence: "daily",
+            targetTime: "midnight",
+            targetTimeRelation: "before",
+            scope: "ongoing"
+          }
+        ],
+        memoryWrites: []
+      };
+
+      const parsed = parseAiInterpretation(raw);
+      assert.equal(parsed.errors.length, 0);
+      const errors = validateFinalInterpretation("我希望每天睡觉。", parsed.value, raw).join(" ");
+      assert.match(errors, /targetTime.*HH:mm/);
     }
   },
   {

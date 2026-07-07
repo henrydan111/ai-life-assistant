@@ -149,10 +149,26 @@ function validateCheckInReferences(actions: InterpretAction[]) {
   return errors;
 }
 
+function isHHMM(value: string) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function validateRoutineGoalTargetTimes(actions: InterpretAction[]) {
+  const errors: string[] = [];
+  actions.forEach((action, index) => {
+    if (action.type !== "add_routine_goal" || !action.targetTime) return;
+    if (!isHHMM(action.targetTime)) {
+      errors.push(`normalized_actions[${index}].targetTime 必须是 HH:mm，且范围为 00:00-23:59。`);
+    }
+  });
+  return errors;
+}
+
 export function validateFinalInterpretation(rawText: string, interpretation: AiInterpretation, raw?: unknown) {
   return [
     ...(raw === undefined ? [] : validateAiInterpretationSchema(raw)),
     ...validateActionArraySchema(interpretation.actions, "normalized_actions"),
+    ...validateRoutineGoalTargetTimes(interpretation.actions),
     ...validateCoreIntentCoverage(rawText, interpretation.actions, interpretation.feedback.question, true),
     ...validateCheckInReferences(interpretation.actions)
   ];

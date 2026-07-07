@@ -1,4 +1,5 @@
 import type { EnergyLevel, Horizon, LifeEvent, MemoryWrite, ParseFeedback, Priority, RoutineGoal, ShoppingItem, Task } from "@/types/domain";
+import type { PlanTrace } from "@/lib/ai/agentPlan/types";
 
 export type InterpretAction =
   | {
@@ -78,6 +79,7 @@ export type AiInterpretation = {
   feedback: ParseFeedback;
   actions: InterpretAction[];
   memoryWrites: MemoryWrite[];
+  planTrace?: PlanTrace[];
 };
 
 type ParseResult<T> = {
