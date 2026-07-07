@@ -11,6 +11,8 @@ type UpdateItemRequest = {
   model?: string;
   state?: AssistantState;
   target?: AssistantItemRef;
+  clientRequestId?: string;
+  baseRevision?: number;
 };
 
 const SYSTEM_PROMPT = `
@@ -61,6 +63,13 @@ const SYSTEM_PROMPT = `
 
 function isValidRequest(body: unknown): body is UpdateItemRequest {
   return Boolean(body) && typeof body === "object";
+}
+
+function requestMeta(body: UpdateItemRequest) {
+  return {
+    clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : undefined,
+    baseRevision: typeof body.baseRevision === "number" ? body.baseRevision : undefined
+  };
 }
 
 function relatedTypeForTarget(target: AssistantItemRef) {
@@ -303,9 +312,10 @@ export async function POST(request: Request) {
   }
 
   const inputType = body.inputType === "voice" ? "voice" : "text";
+  const meta = requestMeta(body);
 
   if (!canUseAgentPlan()) {
-    return NextResponse.json({ error: "AI 修改服务未配置，无法保存这次更新。" }, { status: 503 });
+    return NextResponse.json({ ...meta, error: "AI 修改服务未配置，无法保存这次更新。" }, { status: 503 });
   }
 
   try {
@@ -319,11 +329,12 @@ export async function POST(request: Request) {
     const result = applyItemUpdatePlan(body.state, body.target, body.rawText, inputType, plan);
     return NextResponse.json({
       ...result,
+      ...meta,
       provider: "volcengine_agent_plan_runtime",
       model: resolveAgentPlanLanguageModel(body.model)
     });
   } catch (error) {
     console.warn("Agent Plan item update failed.", error);
-    return NextResponse.json({ error: "AI 修改失败，未保存这次更新。请稍后重试。" }, { status: 502 });
+    return NextResponse.json({ ...meta, error: "AI 修改失败，未保存这次更新。请稍后重试。" }, { status: 502 });
   }
 }

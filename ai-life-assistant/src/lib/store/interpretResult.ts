@@ -14,6 +14,13 @@ export type InterpretResult = {
   baseRevision?: number;
 };
 
+export type RequestRevision = {
+  clientRequestId: string;
+  baseRevision: number;
+};
+
+export type InterpretStateUpdateBlockReason = "skip" | "request_mismatch" | "stale";
+
 export function shouldSkipInterpretStateUpdate(result: Pick<InterpretResult, "provider" | "safeFailure" | "stateUnchanged">) {
   return Boolean(
     result.safeFailure ||
@@ -31,9 +38,35 @@ export function isStaleInterpretResult(
   return typeof baseRevision === "number" && baseRevision !== currentRevision;
 }
 
+export function hasMismatchedInterpretRequest(
+  result: Pick<InterpretResult, "clientRequestId">,
+  request?: Pick<Partial<RequestRevision>, "clientRequestId">
+) {
+  return Boolean(result.clientRequestId && request?.clientRequestId && result.clientRequestId !== request.clientRequestId);
+}
+
+export function getInterpretStateUpdateBlockReason(
+  result: Pick<InterpretResult, "provider" | "safeFailure" | "stateUnchanged" | "clientRequestId" | "baseRevision">,
+  currentRevision: number,
+  request?: Partial<RequestRevision>
+): InterpretStateUpdateBlockReason | null {
+  if (shouldSkipInterpretStateUpdate(result)) return "skip";
+  if (hasMismatchedInterpretRequest(result, request)) return "request_mismatch";
+  if (isStaleInterpretResult(result, currentRevision, request?.baseRevision)) return "stale";
+  return null;
+}
+
+export function shouldApplyInterpretResult(
+  result: Pick<InterpretResult, "provider" | "safeFailure" | "stateUnchanged" | "clientRequestId" | "baseRevision">,
+  currentRevision: number,
+  request?: Partial<RequestRevision>
+) {
+  return getInterpretStateUpdateBlockReason(result, currentRevision, request) === null;
+}
+
 export function buildStaleInterpretResultFeedback(): ParseFeedback {
   return {
     title: "没有覆盖当前总览",
-    detail: "这次结果基于较早的状态返回。为了避免覆盖你刚更新的内容，我没有保存这次结果。"
+    detail: "这次整理返回时，你的总览已经更新过。为了避免覆盖当前内容，我没有自动保存这次结果。你可以再说一遍需要补上的事项。"
   };
 }

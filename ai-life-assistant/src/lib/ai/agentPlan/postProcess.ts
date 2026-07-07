@@ -240,15 +240,16 @@ function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretat
         "clarification.compiler.create_sleep_time_question",
         /(中午|午夜|晚上|半夜|12点|十二点)/
       );
-    } else if (ref && isRecent) {
+    }
+    if (ref && isRecent) {
       actions = ensureRoutineCheckIn(
         actions,
         ref,
         "确认睡眠目标范围",
-        "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
+        "这个睡眠目标你想先从今天开始试一段时间，还是长期保持？",
         trace,
-        "clarification.compiler.create_scope_question",
-        /(从今天|开始|试|多久|持续|长期|最近|范围)/
+        "clarification.compiler.create_sleep_scope_question",
+        /(最近|近期|这段时间|长期|多久|持续|范围|试|保持)/
       );
     }
 
@@ -291,15 +292,16 @@ function ensureRecurringSleepGoal(rawText: string, interpretation: AiInterpretat
       "clarification.compiler.create_sleep_time_question",
       /(中午|午夜|晚上|半夜|12点|十二点)/
     );
-  } else if (isRecent) {
+  }
+  if (isRecent) {
     actions = ensureRoutineCheckIn(
       actions,
       ref,
       "确认睡眠目标范围",
-      "这个睡眠目标你想从今天开始执行，还是先试一段时间？",
+      "这个睡眠目标你想先从今天开始试一段时间，还是长期保持？",
       trace,
-      "clarification.compiler.create_scope_question",
-      /(从今天|开始|试|多久|持续|长期|最近|范围)/
+      "clarification.compiler.create_sleep_scope_question",
+      /(最近|近期|这段时间|长期|多久|持续|范围|试|保持)/
     );
   }
 

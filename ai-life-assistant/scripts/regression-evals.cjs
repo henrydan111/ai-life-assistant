@@ -17,8 +17,10 @@ const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFai
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
 const {
   buildStaleInterpretResultFeedback,
+  getInterpretStateUpdateBlockReason,
   isStaleInterpretResult,
   safePlanningFailureProvider,
+  shouldApplyInterpretResult,
   shouldSkipInterpretStateUpdate
 } = jiti("../src/lib/store/interpretResult.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
@@ -731,9 +733,32 @@ const evals = [
       assert.equal(isStaleInterpretResult({ baseRevision: 3 }, 4), true);
       assert.equal(isStaleInterpretResult({}, 4, 3), true);
       assert.equal(isStaleInterpretResult({}, 3, 3), false);
+      assert.equal(
+        getInterpretStateUpdateBlockReason({ clientRequestId: "other", baseRevision: 3 }, 3, {
+          clientRequestId: "request_a",
+          baseRevision: 3
+        }),
+        "request_mismatch"
+      );
 
       const feedback = buildStaleInterpretResultFeedback();
-      assert.match(`${feedback.title} ${feedback.detail}`, /没有覆盖|较早的状态|避免覆盖/);
+      assert.match(`${feedback.title} ${feedback.detail}`, /没有覆盖|总览已经更新过|避免覆盖/);
+    }
+  },
+  {
+    name: "same-base interpretation race drops the second whole-state result",
+    run() {
+      let currentRevision = 0;
+      const requestA = { clientRequestId: "request_a", baseRevision: currentRevision };
+      const requestB = { clientRequestId: "request_b", baseRevision: currentRevision };
+      const resultA = { clientRequestId: "request_a", baseRevision: 0 };
+      const resultB = { clientRequestId: "request_b", baseRevision: 0 };
+
+      assert.equal(shouldApplyInterpretResult(resultA, currentRevision, requestA), true);
+      currentRevision += 1;
+
+      assert.equal(shouldApplyInterpretResult(resultB, currentRevision, requestB), false);
+      assert.equal(getInterpretStateUpdateBlockReason(resultB, currentRevision, requestB), "stale");
     }
   },
   {
@@ -1011,6 +1036,41 @@ const evals = [
         1
       );
       assert.equal(result.trace.some((item) => item.rule === "routine.repair.remove_duplicate_task"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing adds missing recent routine scope check-in",
+    run() {
+      const rawText = "我最近希望能够每天半夜12点前睡觉。";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: {
+          title: "识别出日常早睡目标意图",
+          detail: "识别到你希望最近每天半夜12点前睡觉，需要先确认目标范围再完成设置",
+          question: "请问这个早睡目标是只在最近执行，还是需要长期保持呢？"
+        },
+        actions: [
+          {
+            type: "add_routine_goal",
+            ref: "sleep_goal",
+            title: "每天半夜12点前睡觉",
+            cadence: "daily",
+            targetTime: "00:00",
+            targetTimeRelation: "before",
+            scope: "recent",
+            scopeLabel: "最近"
+          }
+        ],
+        memoryWrites: []
+      });
+      const checkIn = result.interpretation.actions.find(
+        (action) => action.type === "add_check_in" && action.relatedType === "routine_goal"
+      );
+
+      assert.ok(checkIn);
+      assert.equal(checkIn.relatedRef, "sleep_goal");
+      assert.match(actionText(checkIn), /最近|长期|试|保持|范围/);
+      assert.equal(result.trace.some((item) => item.rule === "clarification.compiler.create_sleep_scope_question"), true);
       assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
     }
   },

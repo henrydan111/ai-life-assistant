@@ -17,9 +17,10 @@ import { defaultAgentPlanLanguageModel } from "@/lib/ai/modelCatalog";
 import { compactMemoryItems } from "@/lib/memory/compactMemoryItems";
 import {
   buildStaleInterpretResultFeedback,
-  isStaleInterpretResult,
+  getInterpretStateUpdateBlockReason,
   shouldSkipInterpretStateUpdate,
-  type InterpretResult
+  type InterpretResult,
+  type RequestRevision
 } from "@/lib/store/interpretResult";
 
 const STORAGE_KEY = "ai-life-assistant-state-v1";
@@ -40,11 +41,6 @@ type LegacyAssistantState = AssistantState & {
 type SubmitInputOptions = {
   originalText?: string;
   transcriptRepair?: TranscriptRepair;
-};
-
-type RequestRevision = {
-  clientRequestId: string;
-  baseRevision: number;
 };
 
 type ProgressReporter = (update: AiProcessingUpdate) => void;
@@ -358,14 +354,17 @@ async function submitInputWithProgress(
 export function useAssistantStore() {
   const [state, setRawState] = useState<AssistantState>(() => createDefaultState());
   const [hydrated, setHydrated] = useState(false);
+  const stateRef = useRef(state);
   const revisionRef = useRef(0);
 
   const setState = useCallback((nextState: SetStateAction<AssistantState>) => {
-    setRawState((current) => {
-      const next = typeof nextState === "function" ? (nextState as (current: AssistantState) => AssistantState)(current) : nextState;
-      if (next !== current) revisionRef.current += 1;
-      return next;
-    });
+    const current = stateRef.current;
+    const next = typeof nextState === "function" ? (nextState as (current: AssistantState) => AssistantState)(current) : nextState;
+    if (next !== current) {
+      revisionRef.current += 1;
+      stateRef.current = next;
+    }
+    setRawState(next);
   }, []);
 
   useEffect(() => {
@@ -385,18 +384,26 @@ export function useAssistantStore() {
         onProgress?: ProgressReporter,
         options: SubmitInputOptions = {}
       ) {
+        const requestState = stateRef.current;
         const revision: RequestRevision = {
           clientRequestId: createId("request"),
           baseRevision: revisionRef.current
         };
         if (onProgress) {
-          const result = await submitInputWithProgress(rawText, inputType, state, onProgress, revision, options);
-          if (!shouldSkipInterpretStateUpdate(result)) {
+          const result = await submitInputWithProgress(rawText, inputType, requestState, onProgress, revision, options);
+          const blockReason = getInterpretStateUpdateBlockReason(result, revisionRef.current, revision);
+          if (!blockReason) {
             if (!result.state) throw new Error("AI interpretation result did not include state.");
-            if (isStaleInterpretResult(result, revisionRef.current, revision.baseRevision)) {
-              return buildStaleInterpretResultFeedback();
-            }
             setState(normalizeAssistantState(result.state));
+          } else if (blockReason !== "skip") {
+            const feedback = buildStaleInterpretResultFeedback();
+            onProgress({
+              stage: "done",
+              status: "attention",
+              title: feedback.title,
+              detail: feedback.detail
+            });
+            return feedback;
           }
           return result.feedback;
         }
@@ -409,8 +416,8 @@ export function useAssistantStore() {
             originalText: options.originalText,
             transcriptRepair: options.transcriptRepair,
             inputType,
-            state,
-            model: state.preferences.languageModel,
+            state: requestState,
+            model: requestState.preferences.languageModel,
             clientRequestId: revision.clientRequestId,
             baseRevision: revision.baseRevision
           })
@@ -420,12 +427,12 @@ export function useAssistantStore() {
         if (!response.ok || !result.feedback || (!result.state && !skipStateUpdate)) {
           throw new Error(result.error ?? "AI interpretation failed.");
         }
-        if (!skipStateUpdate) {
+        const blockReason = getInterpretStateUpdateBlockReason(result, revisionRef.current, revision);
+        if (!blockReason) {
           if (!result.state) throw new Error("AI interpretation result did not include state.");
-          if (isStaleInterpretResult(result, revisionRef.current, revision.baseRevision)) {
-            return buildStaleInterpretResultFeedback();
-          }
           setState(normalizeAssistantState(result.state));
+        } else if (blockReason !== "skip") {
+          return buildStaleInterpretResultFeedback();
         }
         return result.feedback;
       },
@@ -667,6 +674,7 @@ export function useAssistantStore() {
         rawText: string,
         inputType: "text" | "voice" = "text"
       ): Promise<ParseFeedback> {
+        const requestState = stateRef.current;
         const revision: RequestRevision = {
           clientRequestId: createId("request"),
           baseRevision: revisionRef.current
@@ -674,20 +682,29 @@ export function useAssistantStore() {
         const response = await fetch("/api/ai/update-item", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rawText, inputType, target, state, model: state.preferences.languageModel })
+          body: JSON.stringify({
+            rawText,
+            inputType,
+            target,
+            state: requestState,
+            model: requestState.preferences.languageModel,
+            clientRequestId: revision.clientRequestId,
+            baseRevision: revision.baseRevision
+          })
         });
-        const result = (await response.json()) as { state?: AssistantState; feedback?: ParseFeedback; error?: string };
+        const result = (await response.json()) as InterpretResult;
         if (!response.ok || !result.state || !result.feedback) {
           throw new Error(result.error ?? "AI item update failed.");
         }
-        if (isStaleInterpretResult({}, revisionRef.current, revision.baseRevision)) {
+        const blockReason = getInterpretStateUpdateBlockReason(result, revisionRef.current, revision);
+        if (blockReason && blockReason !== "skip") {
           return buildStaleInterpretResultFeedback();
         }
         setState(normalizeAssistantState(result.state));
         return result.feedback;
       }
     }),
-    [state]
+    [setState]
   );
 
   return { state, hydrated, ...actions };
