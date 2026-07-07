@@ -22,12 +22,23 @@ function hasUntimedMilkShoppingNeed(rawText: string) {
   return /牛奶/.test(rawText) && /(买|需要|没有|没了|缺|快没了|提醒)/.test(rawText) && !hasExplicitReminderTimeOfDay(rawText, /牛奶/);
 }
 
+function hasDateOnlyMilkShoppingTiming(rawText: string) {
+  const segment = segmentMentioning(rawText, /牛奶/);
+  const hasDate = /(明天|后天|大后天|周[一二三四五六日天]|星期[一二三四五六日天])/.test(segment);
+  const hasTimeOfDay = /(今晚|明早|上午|中午|下午|晚上|凌晨|\d{1,2}\s*(?:点|:|：))/.test(segment);
+  return hasDate && !hasTimeOfDay;
+}
+
 function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
   if (!hasUntimedMilkShoppingNeed(rawText)) return interpretation;
 
   const actions = interpretation.actions.map((action) => {
     if (action.type === "add_task" && /牛奶/.test(actionText(action)) && action.dueAt) {
-      const repaired = { ...action, dueAt: undefined };
+      const repaired = {
+        ...action,
+        dueAt: undefined,
+        horizon: hasDateOnlyMilkShoppingTiming(rawText) ? ("later" as const) : action.horizon
+      };
       trace.push({
         rule: "temporal.repair.remove_unsupported_milk_due_at",
         severity: "repair",

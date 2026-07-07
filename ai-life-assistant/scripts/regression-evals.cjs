@@ -1488,6 +1488,35 @@ const evals = [
     }
   },
   {
+    name: "ShoppingPolicy moves date-only milk tasks out of today",
+    run() {
+      const rawText = "明天买牛奶";
+      const trace = [];
+      const result = applyShoppingPolicy(rawText, {
+        feedback: { title: "已记录", detail: "已记录买牛奶。" },
+        actions: [
+          {
+            type: "add_task",
+            ref: "milk_task",
+            title: "买牛奶",
+            dueAt: "2026-01-02T12:00:00+08:00",
+            horizon: "today"
+          }
+        ],
+        memoryWrites: []
+      }, trace);
+      const task = result.actions.find((action) => action.type === "add_task" && /牛奶/.test(actionText(action)));
+      const applied = applyInterpretation(rawText, "text", createState(), result).state;
+      const dashboard = generateDashboard(applied);
+
+      assert.ok(task);
+      assert.equal(task.dueAt, undefined);
+      assert.equal(task.horizon, "later");
+      assert.equal(trace.some((item) => item.rule === "temporal.repair.remove_unsupported_milk_due_at"), true);
+      assert.equal(dashboard.today.some((item) => /牛奶/.test(item.title)), false);
+    }
+  },
+  {
     name: "Agent Plan post-processing keeps shopping reminders actionable",
     run() {
       const rawText = "家里牛奶快没了，提醒我要买牛奶";
@@ -1535,7 +1564,8 @@ const evals = [
             type: "add_task",
             ref: "milk_task",
             title: "买牛奶",
-            dueAt: "2026-01-02T12:00:00+08:00"
+            dueAt: "2026-01-02T12:00:00+08:00",
+            horizon: "today"
           }
         ],
         memoryWrites: []
