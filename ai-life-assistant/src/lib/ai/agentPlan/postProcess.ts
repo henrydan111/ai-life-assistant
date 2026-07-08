@@ -1,4 +1,4 @@
-import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
+import type { AiInterpretation } from "@/lib/ai/interpretation";
 import { applyRoutineGoalPolicy } from "@/lib/ai/productCompiler/policies/routineGoalPolicy";
 import { applyShoppingPolicy } from "@/lib/ai/productCompiler/policies/shoppingPolicy";
 import { applyTravelPolicy } from "@/lib/ai/productCompiler/policies/travelPolicy";
@@ -7,11 +7,7 @@ import type { AssistantState } from "@/types/domain";
 import { actionText } from "./actionText";
 import { actionRefs, ensureActionRef } from "./actionRefs";
 import type { PlanTrace } from "./types";
-import {
-  containsMultipleTravelPrepCategories,
-  splitCombinedTravelPrepCheckIns,
-  travelPrepCategoriesIn
-} from "./travelPrepPolicy";
+import { applyTravelPrepPolicy } from "./travelPrepPolicy";
 
 function repairExistingRelatedRefs(state: AssistantState, interpretation: AiInterpretation): AiInterpretation {
   const refs = actionRefs(interpretation.actions);
@@ -37,43 +33,6 @@ function repairExistingRelatedRefs(state: AssistantState, interpretation: AiInte
       };
     })
   };
-}
-
-function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiInterpretation): AiInterpretation {
-  const categories = travelPrepCategoriesIn(rawText);
-  if (!categories.length) return interpretation;
-
-  let actions = interpretation.actions;
-  const eventIndex = actions.findIndex(
-    (action) => action.type === "add_life_event" && (action.category === "travel" || /去|出行|旅行|上海|苏州/.test(actionText(action)))
-  );
-  if (eventIndex === -1) return interpretation;
-
-  const withRef = ensureActionRef(actions, eventIndex, "travel_event");
-  actions = withRef.actions;
-  const eventRef = withRef.ref;
-  if (!eventRef) return { ...interpretation, actions };
-
-  categories.forEach((category) => {
-    const exists = actions.some((action) => {
-      if (action.type !== "add_check_in" || action.relatedType !== "life_event" || action.relatedRef !== eventRef) return false;
-      const text = actionText(action);
-      return category.pattern.test(text) && !containsMultipleTravelPrepCategories(text);
-    });
-    if (exists) return;
-    actions = [
-      ...actions,
-      {
-        type: "add_check_in",
-        title: category.title,
-        question: category.question,
-        relatedType: "life_event",
-        relatedRef: eventRef
-      }
-    ];
-  });
-
-  return { ...interpretation, actions };
 }
 
 function ensureLeaveBossCheckIn(rawText: string, interpretation: AiInterpretation): AiInterpretation {
@@ -126,11 +85,11 @@ export function postProcessAgentPlanInterpretationWithTrace(
   interpretation: AiInterpretation
 ) {
   const trace: PlanTrace[] = [...(interpretation.planTrace ?? [])];
-  let next = splitCombinedTravelPrepCheckIns(interpretation);
+  let next = interpretation;
   next = applyRoutineGoalPolicy(rawText, next, trace);
   next = applyShoppingPolicy(rawText, next, trace);
   next = applyTravelPolicy(rawText, next, trace);
-  next = ensureMentionedTravelPrepCheckIns(rawText, next);
+  next = applyTravelPrepPolicy(rawText, next);
   next = ensureLeaveBossCheckIn(rawText, next);
   next = repairExistingRelatedRefs(state, next);
   next = repairFeedbackCopy(rawText, next, trace);

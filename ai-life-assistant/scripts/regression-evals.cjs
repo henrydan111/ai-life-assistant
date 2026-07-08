@@ -31,7 +31,7 @@ const {
 } = jiti("../src/lib/store/interpretResult.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
-const { splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
+const { applyTravelPrepPolicy, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
 const { generateDashboard } = jiti("../src/lib/dashboard/generateDashboard.ts");
 const { generateVisibleDashboardSnapshot } = jiti("../src/lib/dashboard/visibleDashboardSnapshot.ts");
@@ -1187,6 +1187,23 @@ const evals = [
       assert.equal(checkIns.filter((action) => /高铁票/.test(actionText(action))).length, 1);
       assert.equal(checkIns.filter((action) => /行李/.test(actionText(action))).length, 1);
       assert.equal(checkIns.filter((action) => /餐馆/.test(actionText(action))).length, 1);
+    }
+  },
+  {
+    name: "TravelPrepPolicy owns mentioned prep check-ins",
+    run() {
+      const result = applyTravelPrepPolicy("周末去上海，提醒我订高铁票和收拾行李", {
+        feedback: { title: "已整理", detail: "已整理上海出行。" },
+        actions: [{ type: "add_life_event", ref: "trip", title: "本周末去上海", category: "travel", location: "上海" }],
+        memoryWrites: []
+      });
+
+      assert.equal(result.actions.filter((action) => action.type === "add_check_in" && /高铁票|车票|订票/.test(actionText(action))).length, 1);
+      assert.equal(result.actions.filter((action) => action.type === "add_check_in" && /行李|收拾/.test(actionText(action))).length, 1);
+      assert.equal(
+        result.actions.every((action) => action.type !== "add_check_in" || action.relatedType !== "life_event" || action.relatedRef === "trip"),
+        true
+      );
     }
   },
   {

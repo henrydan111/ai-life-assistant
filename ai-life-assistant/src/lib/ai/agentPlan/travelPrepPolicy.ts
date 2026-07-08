@@ -1,4 +1,5 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
+import { ensureActionRef } from "./actionRefs";
 import { actionText } from "./actionText";
 
 const travelPrepCategories = [
@@ -82,4 +83,45 @@ export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation
   }
 
   return { ...interpretation, actions };
+}
+
+function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiInterpretation): AiInterpretation {
+  const categories = travelPrepCategoriesIn(rawText);
+  if (!categories.length) return interpretation;
+
+  let actions = interpretation.actions;
+  const eventIndex = actions.findIndex(
+    (action) => action.type === "add_life_event" && (action.category === "travel" || /去|出行|旅行|上海|苏州/.test(actionText(action)))
+  );
+  if (eventIndex === -1) return interpretation;
+
+  const withRef = ensureActionRef(actions, eventIndex, "travel_event");
+  actions = withRef.actions;
+  const eventRef = withRef.ref;
+  if (!eventRef) return { ...interpretation, actions };
+
+  categories.forEach((category) => {
+    const exists = actions.some((action) => {
+      if (action.type !== "add_check_in" || action.relatedType !== "life_event" || action.relatedRef !== eventRef) return false;
+      const text = actionText(action);
+      return category.pattern.test(text) && !containsMultipleTravelPrepCategories(text);
+    });
+    if (exists) return;
+    actions = [
+      ...actions,
+      {
+        type: "add_check_in",
+        title: category.title,
+        question: category.question,
+        relatedType: "life_event",
+        relatedRef: eventRef
+      }
+    ];
+  });
+
+  return { ...interpretation, actions };
+}
+
+export function applyTravelPrepPolicy(rawText: string, interpretation: AiInterpretation) {
+  return ensureMentionedTravelPrepCheckIns(rawText, splitCombinedTravelPrepCheckIns(interpretation));
 }
