@@ -1,4 +1,5 @@
 import { createId } from "@/lib/id";
+import { isTravelPrepCheckInText, travelPrepAskAtBefore } from "@/lib/ai/productCompiler/policies/travelPrepPolicy";
 import { parseDueDate, nowIso } from "@/lib/time/parseTime";
 import type { AssistantCheckIn, AssistantState, ParseFeedback, RawInput, TranscriptRepair } from "@/types/domain";
 
@@ -203,7 +204,22 @@ function resolveLifeEventTime(rawText: string, state: AssistantState): ResolverR
           : event
       ),
       checkIns: state.checkIns.map((checkIn) =>
-        matched.some((item) => item.checkIn.id === checkIn.id) ? { ...checkIn, status: "answered" as const } : checkIn
+        matched.some((item) => item.checkIn.id === checkIn.id)
+          ? { ...checkIn, status: "answered" as const }
+          : (() => {
+              const startsAt = checkIn.relatedType === "life_event" ? startsByEventId.get(checkIn.relatedId) : undefined;
+              const askAt = startsAt ? travelPrepAskAtBefore(startsAt) : undefined;
+              if (
+                checkIn.status !== "pending" ||
+                !startsAt ||
+                !askAt ||
+                !isTravelPrepCheckInText(checkInText(checkIn)) ||
+                new Date(checkIn.askAt).getTime() < new Date(startsAt).getTime()
+              ) {
+                return checkIn;
+              }
+              return { ...checkIn, askAt };
+            })()
       )
     },
     changed: true,

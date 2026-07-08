@@ -142,6 +142,11 @@ const travelPrepCategories = [
     key: "restaurant",
     pattern: /餐馆|餐厅|饭店|餐位|订位|定位置|订位置|定座|订座|定座位|订座位/,
     title: "预订餐馆位置"
+  },
+  {
+    key: "hotel",
+    pattern: /酒店|宾馆|住宿|住处|订房|订酒店|定酒店|预订酒店|房间/,
+    title: "预订酒店"
   }
 ] as const;
 

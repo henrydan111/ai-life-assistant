@@ -24,11 +24,22 @@ const travelPrepCategories = [
     label: "餐馆预订",
     title: "预订餐馆位置",
     question: "餐馆位置订好了吗？"
+  },
+  {
+    key: "hotel",
+    pattern: /酒店|宾馆|住宿|住处|订房|订酒店|定酒店|预订酒店|房间/,
+    label: "酒店预订",
+    title: "预订酒店",
+    question: "酒店订好了吗？"
   }
 ] as const;
 
 export function travelPrepCategoriesIn(text: string) {
   return travelPrepCategories.filter((category) => category.pattern.test(text));
+}
+
+export function isTravelPrepCheckInText(text: string) {
+  return travelPrepCategoriesIn(text).length > 0;
 }
 
 export function containsMultipleTravelPrepCategories(text: string) {
@@ -94,6 +105,15 @@ function hasAmbiguousTravelPrepTarget(rawText: string, actions: InterpretAction[
 
 function prepLabels(categories: ReturnType<typeof travelPrepCategoriesIn>) {
   return categories.map((category) => category.label).join("、");
+}
+
+export function travelPrepAskAtBefore(startsAt?: string) {
+  if (!startsAt) return undefined;
+  const start = new Date(startsAt);
+  if (!Number.isFinite(start.getTime())) return undefined;
+  const now = new Date();
+  const oneDayBefore = new Date(start.getTime() - 24 * 60 * 60 * 1000);
+  return (oneDayBefore.getTime() > now.getTime() ? oneDayBefore : now).toISOString();
 }
 
 function ensureTravelPrepTargetClarification(
@@ -178,6 +198,40 @@ export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation
   return { ...interpretation, actions };
 }
 
+function eventStartsByRef(actions: InterpretAction[]) {
+  const starts = new Map<string, string>();
+  actions.forEach((action) => {
+    if (action.type === "add_life_event" && action.ref && action.startsAt) starts.set(action.ref, action.startsAt);
+  });
+  return starts;
+}
+
+function repairTravelPrepAskAt(interpretation: AiInterpretation, trace?: PlanTrace[]): AiInterpretation {
+  const startsByRef = eventStartsByRef(interpretation.actions);
+  if (!startsByRef.size) return interpretation;
+
+  return {
+    ...interpretation,
+    actions: interpretation.actions.map((action) => {
+      if (action.type !== "add_check_in" || action.relatedType !== "life_event" || !action.relatedRef) return action;
+      if (!isTravelPrepCheckInText(actionText(action))) return action;
+      const startsAt = startsByRef.get(action.relatedRef);
+      const askAt = travelPrepAskAtBefore(startsAt);
+      if (!startsAt || !askAt) return action;
+      if (action.askAt && new Date(action.askAt).getTime() < new Date(startsAt).getTime()) return action;
+      const repaired = { ...action, askAt };
+      trace?.push({
+        rule: "travel_prep.repair.ask_at_before_trip",
+        severity: "repair",
+        before: action,
+        after: repaired,
+        reason: "Travel prep reminders must happen before departure, not after the trip starts."
+      });
+      return repaired;
+    })
+  };
+}
+
 function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiInterpretation, trace?: PlanTrace[]): AiInterpretation {
   const categories = travelPrepCategoriesIn(rawText);
   if (!categories.length) return interpretation;
@@ -214,7 +268,8 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
         title: category.title,
         question: category.question,
         relatedType: "life_event",
-        relatedRef: eventRef
+        relatedRef: eventRef,
+        askAt: travelPrepAskAtBefore(actions[eventIndex]?.type === "add_life_event" ? actions[eventIndex].startsAt : undefined)
       }
     ];
   });
@@ -223,5 +278,5 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
 }
 
 export function applyTravelPrepPolicy(rawText: string, interpretation: AiInterpretation, trace?: PlanTrace[]) {
-  return ensureMentionedTravelPrepCheckIns(rawText, splitCombinedTravelPrepCheckIns(interpretation), trace);
+  return repairTravelPrepAskAt(ensureMentionedTravelPrepCheckIns(rawText, splitCombinedTravelPrepCheckIns(interpretation), trace), trace);
 }

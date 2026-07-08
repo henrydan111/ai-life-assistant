@@ -1281,6 +1281,104 @@ const evals = [
     }
   },
   {
+    name: "TravelPrepPolicy creates ticket and hotel reminders for Shanghai travel",
+    run() {
+      const rawText =
+        "我最近都希望每天晚上能12点前睡觉，然后家里牛奶快没了，提醒我买牛奶，另外我这周末要计划去上海，到时候还得买高铁票订酒店";
+      const result = postProcessAgentPlanInterpretation(rawText, createState(), {
+        feedback: { title: "已整理", detail: "已整理上海行程。" },
+        actions: [
+          {
+            type: "add_shopping_item",
+            ref: "milk",
+            itemName: "牛奶",
+            status: "needed",
+            createTask: true
+          },
+          {
+            type: "add_life_event",
+            ref: "shanghai_trip",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海"
+          }
+        ],
+        memoryWrites: []
+      });
+
+      const travelCheckIns = result.actions.filter((action) => action.type === "add_check_in" && action.relatedType === "life_event");
+      assert.equal(travelCheckIns.filter((action) => /高铁票|车票|订票/.test(actionText(action))).length, 1);
+      assert.equal(travelCheckIns.filter((action) => /酒店|住宿|订房/.test(actionText(action))).length, 1);
+      assert.deepEqual(validateFinalInterpretation(rawText, result), []);
+    }
+  },
+  {
+    name: "confirmed departure pulls travel prep reminders before the trip",
+    run() {
+      const state = createState({
+        lifeEvents: [
+          {
+            id: "event_shanghai",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            priority: "medium",
+            participants: [],
+            status: "planned",
+            createdAt: fixedNow,
+            updatedAt: fixedNow
+          }
+        ],
+        checkIns: [
+          {
+            id: "check_time",
+            title: "确认出行时间",
+            question: "这周末去上海，具体是哪天、几点出发？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            clarification: { slot: "life_event_time", targetField: "startsAt", expectedAnswerKind: "date_time" },
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_ticket",
+            title: "提醒购买去上海的高铁票",
+            question: "你是否已经购买好本次去上海的高铁票了？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: "2026-07-11T20:00:00+08:00",
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_hotel",
+            title: "提醒预订上海酒店",
+            question: "你是否已经预订好本次去上海的酒店了？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: "2026-07-11T20:00:00+08:00",
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const result = resolvePendingConfirmations("本周去上海计划周六下午两点", "text", state);
+      assert.ok(result);
+      const event = result.state.lifeEvents.find((item) => item.id === "event_shanghai");
+      assert.ok(event?.startsAt);
+      const startsAt = new Date(event.startsAt).getTime();
+      const prepCheckIns = result.state.checkIns.filter((checkIn) => /高铁票|酒店/.test(`${checkIn.title} ${checkIn.question}`));
+      assert.equal(prepCheckIns.length, 2);
+      assert.equal(prepCheckIns.every((checkIn) => new Date(checkIn.askAt).getTime() < startsAt), true);
+
+      const snapshot = generateVisibleDashboardSnapshot(result.state);
+      assert.match(snapshot.visibleText, /高铁票/);
+      assert.match(snapshot.visibleText, /酒店/);
+    }
+  },
+  {
     name: "Agent Plan post-processing fills explicit leave and travel prep check-ins",
     run() {
       const rawText =
