@@ -273,6 +273,12 @@ const scenarios = [
             if (!milkTasks.length) return "缺少买牛奶今日事项";
             return milkTasks.every((task) => !task.dueAt) || `不应有默认 dueAt：${milkTasks.map(itemText).join(" | ")}`;
           }),
+          expect("不把一次性牛奶提醒误记为定期补货习惯", 3, ({ after, dashboard }) => {
+            const text = [dashboard.visibleText, ...after.memoryItems.map(itemText)].filter(Boolean).join(" ");
+            return !/(定期.*牛奶|牛奶.*定期|快用完.*牛奶|牛奶.*快用完|补充.*牛奶|牛奶.*补充|重复事项.*牛奶)/.test(text)
+              ? true
+              : text;
+          }),
           expect("周末上海保存为待确认时间的出行草稿", 3, ({ after }) => {
             const events = plannedEvents(after, /上海/);
             if (events.length !== 1) return `上海 life_event 数量=${events.length}`;

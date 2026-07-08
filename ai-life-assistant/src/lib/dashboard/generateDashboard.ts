@@ -13,6 +13,10 @@ function promptIsDue(prompt: AssistantCheckIn) {
   return prompt.status === "pending" && new Date(prompt.askAt).getTime() <= Date.now();
 }
 
+function promptCanSurfaceDirectly(prompt: AssistantCheckIn) {
+  return prompt.relatedType !== "memory";
+}
+
 function belongsToToday(task: Task, today: Date, timezone: string) {
   if (task.horizon === "now" || task.horizon === "today") return true;
   if (task.dueAt && isSameLocalDay(new Date(task.dueAt), today, timezone)) return true;
@@ -93,6 +97,6 @@ export function generateDashboard(state: AssistantState): DashboardData {
         status: goal.status
       })),
     state: stateLine,
-    prompts: state.checkIns.filter(promptIsDue).slice(0, 2)
+    prompts: state.checkIns.filter((prompt) => promptIsDue(prompt) && promptCanSurfaceDirectly(prompt)).slice(0, 2)
   };
 }

@@ -177,6 +177,80 @@ const evals = [
     }
   },
   {
+    name: "dashboard snapshot separates suggested memories from open confirmations",
+    run() {
+      const state = createState({
+        memoryItems: [
+          memory({
+            id: "mem_milk",
+            type: "recurring_pattern",
+            summary: "用户可能定期购买牛奶。",
+            tags: ["牛奶"],
+            status: "suggested"
+          }),
+          memory({
+            id: "mem_weather",
+            type: "weather_preference",
+            summary: "用户想知道出门前的天气变化。",
+            tags: ["天气"],
+            status: "suggested"
+          })
+        ],
+        checkIns: [
+          {
+            id: "check_mem_milk",
+            title: "确认记忆",
+            question: "要记住用户可能定期购买牛奶吗？",
+            relatedType: "memory",
+            relatedId: "mem_milk",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_sleep_time",
+            title: "确认睡眠目标时间",
+            question: "你说的12点前，是中午12点，还是晚上/午夜12点？",
+            relatedType: "routine_goal",
+            relatedId: "routine_sleep",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_trip_time",
+            title: "确认出行时间",
+            question: "这周末去上海，具体是哪天、几点出发？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          },
+          {
+            id: "check_hotel",
+            title: "确认酒店",
+            question: "这次上海行程需要订哪一晚的酒店？",
+            relatedType: "life_event",
+            relatedId: "event_shanghai",
+            askAt: fixedNow,
+            status: "pending",
+            createdAt: fixedNow
+          }
+        ]
+      });
+
+      const dashboard = generateVisibleDashboardSnapshot(state);
+
+      assert.equal(dashboard.suggestedMemories.length, 2);
+      assert.equal(dashboard.openConfirmations.length, 3);
+      assert.match(dashboard.visibleText, /确认睡眠目标时间/);
+      assert.match(dashboard.visibleText, /这周末去上海/);
+      assert.match(dashboard.visibleText, /订哪一晚的酒店/);
+      assert.doesNotMatch(dashboard.visibleText, /要记住用户可能定期购买牛奶吗/);
+    }
+  },
+  {
     name: "dashboard snapshot keeps undated weekend travel visible",
     run() {
       const state = createState({
@@ -846,6 +920,58 @@ const evals = [
       assert.equal(result.checkIns.length, 1);
       assert.equal(result.checkIns[0].relatedType, "memory");
       assert.equal(result.checkIns[0].relatedId, result.memoryItems[0].id);
+    }
+  },
+  {
+    name: "Agent Plan post-processing drops one-off milk recurring memory",
+    run() {
+      const rawText = "家里牛奶快没了，提醒我要买牛奶";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已记录", detail: "已记录买牛奶。" },
+        actions: [{ type: "add_shopping_item", ref: "milk", itemName: "牛奶", status: "needed", createTask: true }],
+        memoryWrites: [
+          {
+            type: "recurring_pattern",
+            summary: "用户需要定期购买牛奶，牛奶快用完时会提醒补充。",
+            tags: ["牛奶", "定期购买"],
+            entities: ["牛奶"],
+            confidence: 1,
+            sensitivity: "low",
+            requiresConfirmation: true,
+            evidence: "用户说家里牛奶快没了，提醒买牛奶。"
+          }
+        ]
+      });
+
+      assert.equal(result.interpretation.memoryWrites.length, 0);
+      assert.equal(result.trace.some((item) => item.rule === "memory.repair.drop_one_off_milk_recurring"), true);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
+    }
+  },
+  {
+    name: "Agent Plan post-processing keeps explicit recurring milk memory",
+    run() {
+      const rawText = "以后牛奶快没了都提醒我买";
+      const result = postProcessAgentPlanInterpretationWithTrace(rawText, createState(), {
+        feedback: { title: "已记录", detail: "已记录牛奶补货偏好。" },
+        actions: [{ type: "add_shopping_item", ref: "milk", itemName: "牛奶", status: "needed", createTask: true }],
+        memoryWrites: [
+          {
+            type: "recurring_pattern",
+            summary: "用户希望以后牛奶快没了都提醒购买。",
+            tags: ["牛奶", "补货"],
+            entities: ["牛奶"],
+            confidence: 0.9,
+            sensitivity: "low",
+            requiresConfirmation: true,
+            evidence: "用户说以后牛奶快没了都提醒我买。"
+          }
+        ]
+      });
+
+      assert.equal(result.interpretation.memoryWrites.length, 1);
+      assert.equal(result.trace.some((item) => item.rule === "memory.repair.drop_one_off_milk_recurring"), false);
+      assert.deepEqual(validateFinalInterpretation(rawText, result.interpretation), []);
     }
   },
   {

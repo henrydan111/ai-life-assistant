@@ -29,6 +29,18 @@ function hasDateOnlyMilkShoppingTiming(rawText: string) {
   return hasDate && !hasTimeOfDay;
 }
 
+function hasExplicitRecurringMilkMemoryIntent(rawText: string) {
+  const segment = segmentMentioning(rawText, /牛奶/);
+  return /(以后|每次|每当|只要|都提醒|自动|定期|固定|每周|每月|经常|总是|一直|长期|规律|快没(?:了)?就|用完就|没了就)/.test(
+    segment
+  );
+}
+
+function isUnsupportedMilkMemoryWrite(write: AiInterpretation["memoryWrites"][number]) {
+  const text = [write.summary, write.evidence, ...(write.tags ?? []), ...(write.entities ?? [])].filter(Boolean).join(" ");
+  return /牛奶/.test(text) && /(定期|重复|recurring|每周|每月|经常|总是|快用完|补充|补货|提醒|购买|买|没了|缺|需要)/.test(text);
+}
+
 function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
   if (!hasUntimedMilkShoppingNeed(rawText)) return interpretation;
 
@@ -65,6 +77,26 @@ function removeUnsupportedMilkReminderTimes(rawText: string, interpretation: AiI
   return { ...interpretation, actions };
 }
 
+function removeUnsupportedMilkMemoryWrites(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
+  if (!hasUntimedMilkShoppingNeed(rawText) || hasExplicitRecurringMilkMemoryIntent(rawText) || !interpretation.memoryWrites.length) {
+    return interpretation;
+  }
+
+  const memoryWrites = interpretation.memoryWrites.filter((write) => {
+    if (!isUnsupportedMilkMemoryWrite(write)) return true;
+    trace.push({
+      rule: "memory.repair.drop_one_off_milk_recurring",
+      severity: "repair",
+      before: write,
+      after: undefined,
+      reason: "A one-off milk shopping reminder should not be promoted into a recurring memory without explicit recurring language."
+    });
+    return false;
+  });
+
+  return memoryWrites.length === interpretation.memoryWrites.length ? interpretation : { ...interpretation, memoryWrites };
+}
+
 function ensureShoppingPurchaseTasks(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
   const actions = interpretation.actions.map((action) => {
     if (action.type !== "add_shopping_item" || action.createTask || (action.status && action.status !== "needed")) {
@@ -96,5 +128,6 @@ export function hasUnsafeShoppingReminderText(rawText: string, text: string) {
 
 export function applyShoppingPolicy(rawText: string, interpretation: AiInterpretation, trace: PlanTrace[]) {
   const withoutUnsupportedTimes = removeUnsupportedMilkReminderTimes(rawText, interpretation, trace);
-  return ensureShoppingPurchaseTasks(rawText, withoutUnsupportedTimes, trace);
+  const withoutUnsupportedMemoryWrites = removeUnsupportedMilkMemoryWrites(rawText, withoutUnsupportedTimes, trace);
+  return ensureShoppingPurchaseTasks(rawText, withoutUnsupportedMemoryWrites, trace);
 }

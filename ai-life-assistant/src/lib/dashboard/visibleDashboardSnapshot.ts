@@ -173,7 +173,6 @@ function collectText(snapshot: Omit<VisibleDashboardSnapshot, "visibleText">) {
     parts.push(item.title, item.meta ?? "");
     item.reminders.forEach((reminder) => parts.push(reminder.title, reminder.question));
   });
-  snapshot.dashboardPrompts.forEach((checkIn) => parts.push(checkIn.title, checkIn.question));
   return parts.filter(Boolean).join(" ");
 }
 
@@ -181,7 +180,7 @@ export function generateVisibleDashboardSnapshot(state: AssistantState): Visible
   const dashboard = generateDashboard(state);
   const suggestedMemories = state.memoryItems
     .filter((memory) => memory.status === "suggested")
-    .slice(0, 3)
+    .slice(0, 2)
     .map((memory) => ({ id: memory.id, summary: memory.summary }));
   const suggestedMemoryIds = new Set(suggestedMemories.map((memory) => memory.id));
   const openConfirmations = state.checkIns
@@ -193,7 +192,7 @@ export function generateVisibleDashboardSnapshot(state: AssistantState): Visible
         !suggestedMemoryIds.has(checkIn.relatedId)
     )
     .sort((left, right) => new Date(left.askAt).getTime() - new Date(right.askAt).getTime())
-    .slice(0, Math.max(0, 3 - suggestedMemories.length))
+    .slice(0, 3)
     .map(toVisibleCheckIn);
 
   const snapshotWithoutText = {
@@ -221,7 +220,7 @@ export function generateVisibleDashboardSnapshot(state: AssistantState): Visible
       state,
       dashboard.today.map((task) => task.id)
     ),
-    dashboardPrompts: dashboard.prompts.map(toVisibleCheckIn)
+    dashboardPrompts: openConfirmations
   };
 
   return {

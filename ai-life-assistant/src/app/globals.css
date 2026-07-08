@@ -2103,6 +2103,27 @@ button {
   gap: 10px;
 }
 
+.confirmation-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.confirmation-group {
+  display: grid;
+  gap: 7px;
+}
+
+.confirmation-group + .confirmation-group {
+  border-top: 1px solid rgba(216, 225, 218, 0.82);
+  padding-top: 12px;
+}
+
+.confirmation-group-label {
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .memory-list {
   display: grid;
   gap: 9px;

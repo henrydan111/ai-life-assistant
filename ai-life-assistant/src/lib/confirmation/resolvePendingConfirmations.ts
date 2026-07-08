@@ -147,9 +147,14 @@ function canAutoBindSingleCandidate(rawText: string, candidateCount: number) {
   return candidateCount === 1 && isLikelyStandaloneConfirmationAnswer(rawText);
 }
 
-function eventTimeSegment(rawText: string, event: AssistantState["lifeEvents"][number], allowStandaloneAnswer: boolean) {
+function eventTimeSegment(
+  rawText: string,
+  event: AssistantState["lifeEvents"][number],
+  allowStandaloneAnswer: boolean,
+  timezone?: string
+) {
   return textSegments(rawText).find((segment) => {
-    if (!parseDueDate(segment)) return false;
+    if (!parseDueDate(segment, new Date(), timezone)) return false;
     return mentionedEvent(segment, event) || canAutoBindSingleCandidate(segment, allowStandaloneAnswer ? 1 : 2);
   });
 }
@@ -173,6 +178,7 @@ function matchingRoutineSegment(
 
 function resolveLifeEventTime(rawText: string, state: AssistantState): ResolverResult {
   const onlyPendingCheckIn = pendingCheckIns(state).length === 1;
+  const timezone = state.preferences.timezone;
   const candidates = pendingCheckIns(state).filter(
     (checkIn) => checkIn.relatedType === "life_event" && checkInClarifies(checkIn, "life_event_time", timeQuestionPattern)
   );
@@ -180,8 +186,8 @@ function resolveLifeEventTime(rawText: string, state: AssistantState): ResolverR
     .map((checkIn) => {
       const event = state.lifeEvents.find((item) => item.id === checkIn.relatedId && item.status !== "cancelled");
       if (!event) return undefined;
-      const segment = eventTimeSegment(rawText, event, onlyPendingCheckIn);
-      const startsAt = segment ? parseDueDate(segment) : undefined;
+      const segment = eventTimeSegment(rawText, event, onlyPendingCheckIn, timezone);
+      const startsAt = segment ? parseDueDate(segment, new Date(), timezone) : undefined;
       return startsAt ? { checkIn, event, startsAt, segment } : undefined;
     })
     .filter((item): item is { checkIn: AssistantCheckIn; event: AssistantState["lifeEvents"][number]; startsAt: string; segment: string } =>
@@ -470,7 +476,9 @@ function segmentWasResolvedConfirmation(segment: string, before: AssistantState,
   const eventIds = changedEventIds(before, after);
   if (
     eventIds.size > 0 &&
-    before.lifeEvents.some((event) => eventIds.has(event.id) && mentionedEvent(segment, event) && Boolean(parseDueDate(segment)))
+    before.lifeEvents.some(
+      (event) => eventIds.has(event.id) && mentionedEvent(segment, event) && Boolean(parseDueDate(segment, new Date(), before.preferences.timezone))
+    )
   ) {
     return true;
   }

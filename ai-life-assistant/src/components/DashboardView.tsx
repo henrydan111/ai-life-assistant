@@ -88,7 +88,7 @@ export function DashboardView({
   const titleId = useId();
   const progressId = useId();
   const timezone = state?.preferences.timezone;
-  const suggestedMemories = (state?.memoryItems ?? []).filter((memory) => memory.status === "suggested").slice(0, 3);
+  const suggestedMemories = (state?.memoryItems ?? []).filter((memory) => memory.status === "suggested").slice(0, 2);
   const suggestedMemoryIds = new Set(suggestedMemories.map((memory) => memory.id));
   const openConfirmations = (state?.checkIns ?? [])
     .filter(
@@ -99,7 +99,7 @@ export function DashboardView({
         !suggestedMemoryIds.has(checkIn.relatedId)
     )
     .sort((left, right) => new Date(left.askAt).getTime() - new Date(right.askAt).getTime())
-    .slice(0, Math.max(0, 3 - suggestedMemories.length));
+    .slice(0, 3);
   const remembered = (state?.memoryItems ?? []).filter((memory) => memory.status === "active").slice(0, 4);
 
   function remindersForTask(taskId: string) {
@@ -328,40 +328,48 @@ export function DashboardView({
               <span>需要你确认</span>
             </div>
           </div>
-          {suggestedMemories.length ? (
-            <MemoryList
-              memories={suggestedMemories}
-              compact
-              emptyText=""
-              onConfirmMemory={onConfirmMemory}
-              onForgetMemory={onForgetMemory}
-              onUpdateMemorySummary={onUpdateMemorySummary}
-            />
-          ) : null}
-          {openConfirmations.length ? (
-            <ul className="memory-list compact">
-              {openConfirmations.map((checkIn) => (
-                <li className="memory-item" key={checkIn.id}>
-                  <div className="memory-main">
-                    <p>{checkIn.question}</p>
-                    <small>
-                      {dayLabel(checkIn.askAt, timezone)}
-                      {" · "}
-                      {formatTime(checkIn.askAt, timezone)}
-                    </small>
-                  </div>
-                  <ItemActionButtons
-                    className="hide-in-display compact-actions"
-                    target={{ id: checkIn.id, title: checkIn.question, kind: "check_in" }}
-                    onComplete={onCompleteItem}
-                    onDelete={onDeleteItem}
-                    onDiscuss={onDiscussItem}
-                    showDiscuss={false}
-                  />
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          <div className="confirmation-groups">
+            {suggestedMemories.length ? (
+              <div className="confirmation-group">
+                <div className="confirmation-group-label">建议记住</div>
+                <MemoryList
+                  memories={suggestedMemories}
+                  compact
+                  emptyText=""
+                  onConfirmMemory={onConfirmMemory}
+                  onForgetMemory={onForgetMemory}
+                  onUpdateMemorySummary={onUpdateMemorySummary}
+                />
+              </div>
+            ) : null}
+            {openConfirmations.length ? (
+              <div className="confirmation-group">
+                <div className="confirmation-group-label">待补充细节</div>
+                <ul className="memory-list compact confirmation-list">
+                  {openConfirmations.map((checkIn) => (
+                    <li className="memory-item" key={checkIn.id}>
+                      <div className="memory-main">
+                        <p>{checkIn.question}</p>
+                        <small>
+                          {dayLabel(checkIn.askAt, timezone)}
+                          {" · "}
+                          {formatTime(checkIn.askAt, timezone)}
+                        </small>
+                      </div>
+                      <ItemActionButtons
+                        className="hide-in-display compact-actions"
+                        target={{ id: checkIn.id, title: checkIn.question, kind: "check_in" }}
+                        onComplete={onCompleteItem}
+                        onDelete={onDeleteItem}
+                        onDiscuss={onDiscussItem}
+                        showDiscuss={false}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+          </div>
         </section>
       ) : null}
 

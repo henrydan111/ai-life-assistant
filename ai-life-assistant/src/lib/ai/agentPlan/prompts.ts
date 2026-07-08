@@ -116,6 +116,7 @@ ${ACTION_SCHEMA}
 - memory_candidates 当前只作为理解上下文，不要伪造成无意义待办；如果对当下有主动提醒价值，可生成 add_check_in。
 - memoryContext 是经过本地压缩和筛选的长期记忆，只是候选背景。只有与当前输入相关时才使用，不要逐字复述，不要过度推断。
 - 如果发现新的长期事实、偏好、重复模式或未闭环事项，请输出 memoryWrites。只保存未来有行动价值的记忆，不要保存流水账。
+- 一次性购物、缺货或补货请求不是长期记忆。例如“牛奶快没了，提醒我买牛奶”只生成购物项和今日待办，不要写成“定期购买牛奶”“牛奶快用完时提醒补充”或任何 recurring/open_loop memory。只有用户明确说“以后/每次/每周/定期/自动/都提醒”，或 memoryContext 已显示真实重复模式时，才可以写 recurring_pattern。
 - recurring、自动提醒偏好、家庭习惯、出行习惯、天气提醒偏好默认 requiresConfirmation: true。
 - 低风险且明确的事实可以 requiresConfirmation: false，例如“用户家里有多个孩子”，但 summary 仍要简洁。
 - memoryContext.pendingConfirmations 里的内容尚未经过用户确认，不能当作事实使用；只可用于避免重复提出同一条记忆确认。

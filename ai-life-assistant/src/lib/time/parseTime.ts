@@ -92,28 +92,93 @@ export function nextWeekday(base: Date, target: number) {
   return addDays(base, delta);
 }
 
-export function parseDueDate(text: string, baseDate = new Date()) {
+type ZonedDateTimeParts = {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+};
+
+function zonedParts(date: Date, timezone: string): ZonedDateTimeParts {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: resolveTimezone(timezone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(date);
+  const value = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  return {
+    year: value("year"),
+    month: value("month"),
+    day: value("day"),
+    hour: value("hour"),
+    minute: value("minute"),
+    second: value("second")
+  };
+}
+
+function calendarDateParts(parts: ZonedDateTimeParts, dayDelta = 0) {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + dayDelta));
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate()
+  };
+}
+
+function nextWeekdayParts(parts: ZonedDateTimeParts, target: number) {
+  const current = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
+  let delta = target - current;
+  if (delta <= 0) delta += 7;
+  return calendarDateParts(parts, delta);
+}
+
+function zonedWallTimeToIso(
+  dateParts: Pick<ZonedDateTimeParts, "year" | "month" | "day">,
+  hour: number,
+  minute: number,
+  timezone: string
+) {
+  const targetUtc = Date.UTC(dateParts.year, dateParts.month - 1, dateParts.day, hour, minute, 0);
+  let guess = targetUtc;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const observed = zonedParts(new Date(guess), timezone);
+    const observedUtc = Date.UTC(observed.year, observed.month - 1, observed.day, observed.hour, observed.minute, observed.second);
+    const delta = targetUtc - observedUtc;
+    if (delta === 0) break;
+    guess += delta;
+  }
+  return new Date(guess).toISOString();
+}
+
+function parseDueDateInTimezone(text: string, baseDate: Date, timezone: string) {
   const lower = text.toLowerCase();
-  const due = new Date(baseDate);
+  const baseParts = zonedParts(baseDate, timezone);
+  let dateParts = calendarDateParts(baseParts);
 
   if (/tomorrow|明天/.test(lower)) {
-    due.setDate(due.getDate() + 1);
+    dateParts = calendarDateParts(baseParts, 1);
   }
 
   const weekdayEntry = Object.entries(weekdayIndex).find(([label]) => lower.includes(label));
   if (weekdayEntry) {
     const [, target] = weekdayEntry;
-    const next = nextWeekday(baseDate, target);
-    due.setFullYear(next.getFullYear(), next.getMonth(), next.getDate());
+    dateParts = nextWeekdayParts(baseParts, target);
   }
 
   const englishTime = lower.match(/\b(?:by\s*)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
   const chineseTime = text.match(/(上午|早上|下午|晚上|今晚)?\s*(\d{1,2})\s*[点:：]\s*(\d{1,2})?/);
   const looseBy = lower.match(/\bby\s+(\d{1,2})\b/);
+  const asIso = (hour: number, minute = 0) => zonedWallTimeToIso(dateParts, hour, minute, timezone);
 
   if (/(睡觉|睡|上床|休息)/.test(text) && /(12|十二|0|零)\s*[点:：]\s*前/.test(text)) {
-    due.setHours(23, 59, 0, 0);
-    return due.toISOString();
+    return asIso(23, 59);
   }
 
   if (englishTime) {
@@ -122,8 +187,7 @@ export function parseDueDate(text: string, baseDate = new Date()) {
     const meridiem = englishTime[3];
     if (meridiem === "pm" && hour < 12) hour += 12;
     if (meridiem === "am" && hour === 12) hour = 0;
-    due.setHours(hour, minute, 0, 0);
-    return due.toISOString();
+    return asIso(hour, minute);
   }
 
   if (chineseTime) {
@@ -133,33 +197,32 @@ export function parseDueDate(text: string, baseDate = new Date()) {
     if ((period.includes("下午") || period.includes("晚上") || period.includes("今晚")) && hour < 12) {
       hour += 12;
     }
-    due.setHours(hour, minute, 0, 0);
-    return due.toISOString();
+    return asIso(hour, minute);
   }
 
   if (looseBy) {
     let hour = Number(looseBy[1]);
     if (hour > 0 && hour < 8) hour += 12;
-    due.setHours(hour, 0, 0, 0);
-    return due.toISOString();
+    return asIso(hour);
   }
 
   if (/tonight|今晚|晚上/.test(lower)) {
-    due.setHours(20, 0, 0, 0);
-    return due.toISOString();
+    return asIso(20);
   }
 
   if (/today|今天/.test(lower)) {
-    due.setHours(17, 0, 0, 0);
-    return due.toISOString();
+    return asIso(17);
   }
 
   if (/tomorrow|明天/.test(lower) || weekdayEntry) {
-    due.setHours(9, 0, 0, 0);
-    return due.toISOString();
+    return asIso(9);
   }
 
   return undefined;
+}
+
+export function parseDueDate(text: string, baseDate = new Date(), timezone = DEFAULT_TIMEZONE) {
+  return parseDueDateInTimezone(text, baseDate, timezone);
 }
 
 function weekdayTargets(text: string) {
@@ -172,16 +235,16 @@ function weekdayTargets(text: string) {
   return Array.from(new Set(targets));
 }
 
-export function parseDueDates(text: string, baseDate = new Date()) {
+export function parseDueDates(text: string, baseDate = new Date(), timezone = DEFAULT_TIMEZONE) {
   const targets = weekdayTargets(text);
   if (targets.length <= 1) {
-    const dueAt = parseDueDate(text, baseDate);
+    const dueAt = parseDueDate(text, baseDate, timezone);
     return dueAt ? [dueAt] : [];
   }
 
   const withoutWeekdays = text.replace(chineseWeekdayPattern, "").replace(englishWeekdayPattern, "");
   return targets
-    .map((target) => parseDueDate(`${chineseWeekdayLabels[target]} ${withoutWeekdays}`, baseDate))
+    .map((target) => parseDueDate(`${chineseWeekdayLabels[target]} ${withoutWeekdays}`, baseDate, timezone))
     .filter((item): item is string => Boolean(item));
 }
 

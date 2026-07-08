@@ -464,7 +464,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
 
   if (travelWords.test(lower) && parseLocation(text)) {
     const location = parseLocation(text)!;
-    const startsAt = parseDueDate(text);
+    const startsAt = parseDueDate(text, new Date(), next.preferences.timezone);
     const title = travelTitle(text, location);
     const existingEvent = findSimilarLifeEvent(next.lifeEvents, title, location, startsAt);
     const event: LifeEvent = {
@@ -549,7 +549,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
       const newShopping: ShoppingItem[] = [];
       const newTasks: Task[] = [];
       const prompts: AssistantCheckIn[] = [];
-      const dueAt = parseDueDate(text);
+      const dueAt = parseDueDate(text, new Date(), next.preferences.timezone);
 
       items.forEach((itemName) => {
         const existing = next.shoppingItems.find((item) => similar(item.itemName, itemName) && item.status !== "removed");
@@ -596,7 +596,7 @@ export function parseLocalInput(rawText: string, state: AssistantState, inputTyp
     }
   }
 
-  const dueAt = parseDueDate(text);
+  const dueAt = parseDueDate(text, new Date(), next.preferences.timezone);
   const title = titleCase(taskTitleFromInput(text) || text);
   const existingTask = findOpenTask(next.tasks, title, dueAt);
   if (existingTask) {
