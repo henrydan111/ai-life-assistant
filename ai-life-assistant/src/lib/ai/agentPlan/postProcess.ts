@@ -9,6 +9,44 @@ import { actionText } from "./actionText";
 import { actionRefs, ensureActionRef } from "./actionRefs";
 import type { PlanTrace } from "./types";
 
+function expectedActionTypeForRelatedType(relatedType: Extract<AiInterpretation["actions"][number], { type: "add_check_in" }>["relatedType"]) {
+  if (relatedType === "life_event") return "add_life_event";
+  if (relatedType === "shopping_item") return "add_shopping_item";
+  if (relatedType === "routine_goal") return "add_routine_goal";
+  if (relatedType === "task") return "add_task";
+  return undefined;
+}
+
+function normalizeCheckInRelatedActionRefs(interpretation: AiInterpretation, trace: PlanTrace[]): AiInterpretation {
+  const refs = new Map<string, AiInterpretation["actions"][number]["type"]>();
+  interpretation.actions.forEach((action) => {
+    if ("ref" in action && action.ref) refs.set(action.ref, action.type);
+  });
+  if (!refs.size) return interpretation;
+
+  return {
+    ...interpretation,
+    actions: interpretation.actions.map((action) => {
+      if (action.type !== "add_check_in" || !action.relatedId || action.relatedRef) return action;
+      const refType = refs.get(action.relatedId);
+      if (!refType || refType !== expectedActionTypeForRelatedType(action.relatedType)) return action;
+      const repaired = {
+        ...action,
+        relatedRef: action.relatedId,
+        relatedId: undefined
+      };
+      trace.push({
+        rule: "references.repair.related_id_action_ref",
+        severity: "repair",
+        before: action,
+        after: repaired,
+        reason: "The model put a same-batch action ref in relatedId; relatedId is only for persisted object ids, so normalize it to relatedRef before apply."
+      });
+      return repaired;
+    })
+  };
+}
+
 function repairExistingRelatedRefs(state: AssistantState, interpretation: AiInterpretation): AiInterpretation {
   const refs = actionRefs(interpretation.actions);
   const existingIds = {
@@ -86,10 +124,11 @@ export function postProcessAgentPlanInterpretationWithTrace(
 ) {
   const trace: PlanTrace[] = [...(interpretation.planTrace ?? [])];
   let next = interpretation;
+  next = normalizeCheckInRelatedActionRefs(next, trace);
   next = applyRoutineGoalPolicy(rawText, next, trace);
   next = applyShoppingPolicy(rawText, next, trace);
   next = applyTravelPolicy(rawText, next, trace);
-  next = applyTravelPrepPolicy(rawText, next);
+  next = applyTravelPrepPolicy(rawText, next, trace);
   next = ensureLeaveBossCheckIn(rawText, next);
   next = repairExistingRelatedRefs(state, next);
   next = repairFeedbackCopy(rawText, next, trace);

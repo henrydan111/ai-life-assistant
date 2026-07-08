@@ -1209,7 +1209,7 @@ const evals = [
   {
     name: "TravelPrepPolicy dedupes relatedId-only prep check-ins",
     run() {
-      const result = applyTravelPrepPolicy("周末去上海，提醒我订高铁票和收拾行李", {
+      const result = postProcessAgentPlanInterpretationWithTrace("周末去上海，提醒我订高铁票和收拾行李", createState(), {
         feedback: { title: "已整理", detail: "已整理上海出行。" },
         actions: [
           { type: "add_life_event", ref: "trip", title: "本周末去上海", category: "travel", location: "上海" },
@@ -1224,14 +1224,26 @@ const evals = [
         memoryWrites: []
       });
 
-      const checkIns = result.actions.filter((action) => action.type === "add_check_in");
+      const checkIns = result.interpretation.actions.filter((action) => action.type === "add_check_in");
       assert.equal(checkIns.filter((action) => /高铁票|车票|订票/.test(actionText(action))).length, 1);
       assert.equal(checkIns.filter((action) => /行李|收拾/.test(actionText(action))).length, 1);
+      assert.equal(checkIns.some((action) => action.relatedId === "trip"), false);
+      assert.equal(result.trace.some((item) => item.rule === "references.repair.related_id_action_ref"), true);
+
+      const applied = applyInterpretation("周末去上海，提醒我订高铁票和收拾行李", "text", createState(), result.interpretation).state;
+      const trip = applied.lifeEvents.find((event) => /上海/.test(event.title));
+      assert.ok(trip);
+      assert.equal(applied.checkIns.filter((checkIn) => /高铁票|车票|订票/.test(`${checkIn.title} ${checkIn.question}`)).length, 1);
+      assert.equal(
+        applied.checkIns.every((checkIn) => !/高铁票|车票|订票|行李|收拾/.test(`${checkIn.title} ${checkIn.question}`) || checkIn.relatedId === trip.id),
+        true
+      );
     }
   },
   {
-    name: "TravelPrepPolicy does not attach prep to an ambiguous travel event",
+    name: "TravelPrepPolicy asks before attaching prep to an ambiguous travel event",
     run() {
+      const trace = [];
       const result = applyTravelPrepPolicy("提醒我订高铁票", {
         feedback: { title: "已整理", detail: "已整理行前准备。" },
         actions: [
@@ -1239,9 +1251,16 @@ const evals = [
           { type: "add_life_event", ref: "tokyo_trip", title: "去东京", category: "travel", location: "东京" }
         ],
         memoryWrites: []
-      });
+      }, trace);
 
-      assert.equal(result.actions.some((action) => action.type === "add_check_in" && /高铁票|车票|订票/.test(actionText(action))), false);
+      assert.equal(result.actions.some((action) => action.type === "add_check_in" && action.relatedType === "life_event" && /高铁票|车票|订票/.test(actionText(action))), false);
+      assert.equal(result.actions.some((action) => action.type === "add_check_in" && action.relatedType === "project" && /哪次出行/.test(actionText(action))), true);
+      assert.match([result.feedback.detail, result.feedback.question].filter(Boolean).join(" "), /没把它挂到具体行程|哪次出行/);
+      assert.equal(trace.some((item) => item.rule === "travel_prep.clarification.ambiguous_travel_event"), true);
+
+      const before = createState();
+      const after = applyInterpretation("提醒我订高铁票", "text", before, result).state;
+      assertFeedbackStateConsistency(before, after, result.feedback);
     }
   },
   {
@@ -2604,6 +2623,36 @@ const evals = [
       assert.equal(parsed.errors.length, 0);
       const errors = validateFinalInterpretation("提醒我确认车票", parsed.value, raw).join(" ");
       assert.match(errors, /relatedRef="missing_trip"/);
+    }
+  },
+  {
+    name: "AI final validation rejects relatedId values that are action refs",
+    run() {
+      const raw = {
+        feedback: { title: "已整理", detail: "已整理上海行程。" },
+        actions: [
+          {
+            type: "add_life_event",
+            ref: "trip",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海"
+          },
+          {
+            type: "add_check_in",
+            title: "确认高铁票",
+            question: "高铁票订好了吗？",
+            relatedType: "life_event",
+            relatedId: "trip"
+          }
+        ],
+        memoryWrites: []
+      };
+
+      const parsed = parseAiInterpretation(raw);
+      assert.equal(parsed.errors.length, 0);
+      const errors = validateFinalInterpretation("周末去上海，提醒我订高铁票", parsed.value, raw).join(" ");
+      assert.match(errors, /relatedId="trip".*action ref/);
     }
   },
   {

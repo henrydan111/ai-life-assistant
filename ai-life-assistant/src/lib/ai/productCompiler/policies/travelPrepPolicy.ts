@@ -1,23 +1,27 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
 import { ensureActionRef } from "@/lib/ai/agentPlan/actionRefs";
 import { actionText } from "@/lib/ai/agentPlan/actionText";
+import type { PlanTrace } from "@/lib/ai/agentPlan/types";
 
 const travelPrepCategories = [
   {
     key: "ticket",
     pattern: /高铁票|车票|火车票|机票|订票|买票|票务|高铁|往返/,
+    label: "订票",
     title: "确认高铁票",
     question: "高铁票订好了吗？"
   },
   {
     key: "luggage",
     pattern: /行李|收拾/,
+    label: "行李",
     title: "收拾行李",
     question: "行李收拾好了吗？"
   },
   {
     key: "restaurant",
     pattern: /餐馆|餐厅|饭店|餐位|订位|定位置|订位置|定座|订座|定座位|订座位/,
+    label: "餐馆预订",
     title: "预订餐馆位置",
     question: "餐馆位置订好了吗？"
   }
@@ -82,6 +86,61 @@ function travelEventIndexForPrep(rawText: string, actions: InterpretAction[]) {
   return matched.length === 1 ? matched[0] : -1;
 }
 
+function hasAmbiguousTravelPrepTarget(rawText: string, actions: InterpretAction[]) {
+  const candidateIndices = travelEventCandidateIndices(actions);
+  if (candidateIndices.length <= 1) return false;
+  return travelEventIndexForPrep(rawText, actions) === -1;
+}
+
+function prepLabels(categories: ReturnType<typeof travelPrepCategoriesIn>) {
+  return categories.map((category) => category.label).join("、");
+}
+
+function ensureTravelPrepTargetClarification(
+  rawText: string,
+  interpretation: AiInterpretation,
+  categories: ReturnType<typeof travelPrepCategoriesIn>,
+  trace?: PlanTrace[]
+): AiInterpretation {
+  const question = `你想把${prepLabels(categories)}提醒挂到哪次出行？`;
+  const exists = interpretation.actions.some(
+    (action) =>
+      action.type === "add_check_in" &&
+      action.relatedType === "project" &&
+      /(哪次出行|哪个行程|挂到哪次)/.test(actionText(action))
+  );
+  if (exists) return interpretation;
+
+  const next: AiInterpretation = {
+    ...interpretation,
+    feedback: {
+      ...interpretation.feedback,
+      title: "需要确认出行准备",
+      detail: `我看到了${prepLabels(categories)}提醒，但现在有多个出行安排；我还没把它挂到具体行程，避免记错。`,
+      question
+    },
+    actions: [
+      ...interpretation.actions,
+      {
+        type: "add_check_in",
+        title: "确认出行准备归属",
+        question,
+        relatedType: "project"
+      }
+    ]
+  };
+
+  trace?.push({
+    rule: "travel_prep.clarification.ambiguous_travel_event",
+    severity: "clarification",
+    sourceQuote: rawText,
+    before: interpretation.feedback,
+    after: next.feedback,
+    reason: "The user asked for travel prep while multiple travel events are present, so the assistant must ask which trip to attach it to instead of guessing."
+  });
+  return next;
+}
+
 export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation): AiInterpretation {
   const actions: InterpretAction[] = [];
 
@@ -119,12 +178,15 @@ export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation
   return { ...interpretation, actions };
 }
 
-function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiInterpretation): AiInterpretation {
+function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiInterpretation, trace?: PlanTrace[]): AiInterpretation {
   const categories = travelPrepCategoriesIn(rawText);
   if (!categories.length) return interpretation;
 
   let actions = interpretation.actions;
   const eventIndex = travelEventIndexForPrep(rawText, actions);
+  if (eventIndex === -1 && hasAmbiguousTravelPrepTarget(rawText, actions)) {
+    return ensureTravelPrepTargetClarification(rawText, interpretation, categories, trace);
+  }
   if (eventIndex === -1) return interpretation;
 
   const withRef = ensureActionRef(actions, eventIndex, "travel_event");
@@ -160,6 +222,6 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
   return { ...interpretation, actions };
 }
 
-export function applyTravelPrepPolicy(rawText: string, interpretation: AiInterpretation) {
-  return ensureMentionedTravelPrepCheckIns(rawText, splitCombinedTravelPrepCheckIns(interpretation));
+export function applyTravelPrepPolicy(rawText: string, interpretation: AiInterpretation, trace?: PlanTrace[]) {
+  return ensureMentionedTravelPrepCheckIns(rawText, splitCombinedTravelPrepCheckIns(interpretation), trace);
 }

@@ -134,6 +134,10 @@ function validateCheckInReferences(actions: InterpretAction[]) {
       errors.push(`actions[${index}] add_check_in relatedType=${action.relatedType} 时必须提供 relatedRef 或 relatedId。`);
       return;
     }
+    if (action.relatedId && refs.has(action.relatedId)) {
+      errors.push(`actions[${index}] add_check_in relatedId="${action.relatedId}" 是同批 action ref，必须使用 relatedRef，不能作为已落库 id。`);
+      return;
+    }
     if (!action.relatedRef) return;
 
     const refType = refs.get(action.relatedRef);
