@@ -6,6 +6,7 @@ import {
   isRedundantRoutineScopeCheckIn
 } from "@/lib/ai/productCompiler/policies/routineGoalPolicy";
 import { hasUnsafeShoppingReminderText } from "@/lib/ai/productCompiler/policies/shoppingPolicy";
+import { hasUnsafeCoarseWeekendTravelText as defaultHasUnsafeCoarseWeekendTravelText } from "@/lib/ai/productCompiler/policies/travelPolicy";
 import type { AssistantCheckIn } from "@/types/domain";
 
 type UnsafeFeedbackKind = "coarse_weekend_travel" | "milk_reminder" | "routine_goal_confirmation";
@@ -75,7 +76,7 @@ export function repairFeedbackCopy(
   trace: PlanTrace[],
   options: RepairFeedbackCopyOptions = {}
 ): AiInterpretation {
-  const hasUnsafeCoarseWeekendTravelText = options.hasUnsafeCoarseWeekendTravelText ?? (() => false);
+  const hasUnsafeCoarseWeekendTravelText = options.hasUnsafeCoarseWeekendTravelText ?? defaultHasUnsafeCoarseWeekendTravelText;
   const titleKind = unsafeFeedbackKind(rawText, interpretation.feedback.title, hasUnsafeCoarseWeekendTravelText);
   const detailKind = unsafeFeedbackKind(rawText, interpretation.feedback.detail, hasUnsafeCoarseWeekendTravelText);
   const questionKind = unsafeFeedbackKind(rawText, interpretation.feedback.question, hasUnsafeCoarseWeekendTravelText);

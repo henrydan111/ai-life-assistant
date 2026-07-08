@@ -17,6 +17,7 @@ const { confirmationTraceMeta, withoutConfirmationTrace } = jiti("../src/lib/ai/
 const { buildSafePlanningFailureResult } = jiti("../src/lib/ai/agentPlan/safeFailure.ts");
 const { resolveRecurringSleepTarget } = jiti("../src/lib/ai/agentPlan/temporalPolicy.ts");
 const { applyShoppingPolicy } = jiti("../src/lib/ai/productCompiler/policies/shoppingPolicy.ts");
+const { applyTravelPolicy, ensureMentionedTravelDraft } = jiti("../src/lib/ai/productCompiler/policies/travelPolicy.ts");
 const { repairFeedbackCopy } = jiti("../src/lib/ai/productCompiler/responseRepair.ts");
 const { parseJsonObject } = jiti("../src/lib/ai/agentPlan/validatedJson.ts");
 const {
@@ -30,7 +31,7 @@ const {
 } = jiti("../src/lib/store/interpretResult.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
-const { ensureMentionedTravelDraft, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
+const { splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
 const { generateDashboard } = jiti("../src/lib/dashboard/generateDashboard.ts");
 const { generateVisibleDashboardSnapshot } = jiti("../src/lib/dashboard/visibleDashboardSnapshot.ts");
@@ -1127,6 +1128,43 @@ const evals = [
     }
   },
   {
+    name: "TravelPolicy removes coarse weekend default times",
+    run() {
+      const rawText = "我这周末计划要去上海";
+      const trace = [];
+      const result = applyTravelPolicy(rawText, {
+        feedback: { title: "已识别", detail: "需要确认时间。" },
+        actions: [
+          {
+            type: "add_life_event",
+            ref: "shanghai_trip",
+            title: "本周末去上海",
+            category: "travel",
+            location: "上海",
+            startsAt: "2026-07-12T14:00:00+08:00"
+          },
+          {
+            type: "add_check_in",
+            title: "确认上海时间",
+            question: "你本周日14点去上海对吗？",
+            relatedType: "life_event",
+            relatedRef: "shanghai_trip"
+          }
+        ],
+        memoryWrites: []
+      }, trace);
+      const event = result.actions.find((action) => action.type === "add_life_event" && /上海/.test(actionText(action)));
+      const checkIn = result.actions.find((action) => action.type === "add_check_in" && /具体|哪天|几点|出发/.test(actionText(action)));
+
+      assert.ok(event);
+      assert.equal(event.startsAt, undefined);
+      assert.ok(checkIn);
+      assert.equal(result.actions.some((action) => /本周日14点|周日下午2点/.test(actionText(action))), false);
+      assert.equal(trace.some((item) => item.rule === "temporal.repair.remove_unsupported_weekend_travel_time"), true);
+      assert.equal(trace.some((item) => item.rule === "temporal.repair.remove_unsupported_weekend_travel_check_in_time"), true);
+    }
+  },
+  {
     name: "travel prep split does not duplicate generated check-ins",
     run() {
       const combined = {
@@ -1396,7 +1434,7 @@ const evals = [
     }
   },
   {
-    name: "ResponseRepair uses injected travel feedback predicate",
+    name: "ResponseRepair uses TravelPolicy feedback predicate by default",
     run() {
       const rawText = "这周末计划去上海";
       const unsafeFeedback = {
@@ -1418,15 +1456,8 @@ const evals = [
         memoryWrites: []
       };
 
-      const defaultTrace = [];
-      const withoutTravelPredicate = repairFeedbackCopy(rawText, unsafeFeedback, defaultTrace);
-      assert.match(withoutTravelPredicate.feedback.title, /周日下午2点/);
-      assert.equal(defaultTrace.length, 0);
-
       const trace = [];
-      const result = repairFeedbackCopy(rawText, unsafeFeedback, trace, {
-        hasUnsafeCoarseWeekendTravelText: (_rawText, text) => /周日下午2点|本周日14点/.test(text)
-      });
+      const result = repairFeedbackCopy(rawText, unsafeFeedback, trace);
       const visibleFeedback = [result.feedback.title, result.feedback.detail, result.feedback.question].filter(Boolean).join(" ");
 
       assert.doesNotMatch(visibleFeedback, /周日下午2点|本周日14点/);
