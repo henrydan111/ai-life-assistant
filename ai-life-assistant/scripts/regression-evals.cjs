@@ -31,7 +31,7 @@ const {
 } = jiti("../src/lib/store/interpretResult.ts");
 const { applyMemoryWrites } = jiti("../src/lib/memory/applyMemoryWrites.ts");
 const { parseLocalInput } = jiti("../src/lib/parser/parseLocalInput.ts");
-const { applyTravelPrepPolicy, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/agentPlan/travelPrepPolicy.ts");
+const { applyTravelPrepPolicy, splitCombinedTravelPrepCheckIns } = jiti("../src/lib/ai/productCompiler/policies/travelPrepPolicy.ts");
 const { selectRelevantMemories, selectRelevantMemoryItems } = jiti("../src/lib/memory/selectRelevantMemories.ts");
 const { generateDashboard } = jiti("../src/lib/dashboard/generateDashboard.ts");
 const { generateVisibleDashboardSnapshot } = jiti("../src/lib/dashboard/visibleDashboardSnapshot.ts");
@@ -1204,6 +1204,61 @@ const evals = [
         result.actions.every((action) => action.type !== "add_check_in" || action.relatedType !== "life_event" || action.relatedRef === "trip"),
         true
       );
+    }
+  },
+  {
+    name: "TravelPrepPolicy dedupes relatedId-only prep check-ins",
+    run() {
+      const result = applyTravelPrepPolicy("周末去上海，提醒我订高铁票和收拾行李", {
+        feedback: { title: "已整理", detail: "已整理上海出行。" },
+        actions: [
+          { type: "add_life_event", ref: "trip", title: "本周末去上海", category: "travel", location: "上海" },
+          {
+            type: "add_check_in",
+            title: "确认高铁票",
+            question: "高铁票订好了吗？",
+            relatedType: "life_event",
+            relatedId: "trip"
+          }
+        ],
+        memoryWrites: []
+      });
+
+      const checkIns = result.actions.filter((action) => action.type === "add_check_in");
+      assert.equal(checkIns.filter((action) => /高铁票|车票|订票/.test(actionText(action))).length, 1);
+      assert.equal(checkIns.filter((action) => /行李|收拾/.test(actionText(action))).length, 1);
+    }
+  },
+  {
+    name: "TravelPrepPolicy does not attach prep to an ambiguous travel event",
+    run() {
+      const result = applyTravelPrepPolicy("提醒我订高铁票", {
+        feedback: { title: "已整理", detail: "已整理行前准备。" },
+        actions: [
+          { type: "add_life_event", ref: "shanghai_trip", title: "去上海", category: "travel", location: "上海" },
+          { type: "add_life_event", ref: "tokyo_trip", title: "去东京", category: "travel", location: "东京" }
+        ],
+        memoryWrites: []
+      });
+
+      assert.equal(result.actions.some((action) => action.type === "add_check_in" && /高铁票|车票|订票/.test(actionText(action))), false);
+    }
+  },
+  {
+    name: "TravelPrepPolicy attaches prep to the explicitly mentioned travel event",
+    run() {
+      const result = applyTravelPrepPolicy("上海行程提醒我订高铁票", {
+        feedback: { title: "已整理", detail: "已整理上海出行。" },
+        actions: [
+          { type: "add_life_event", ref: "shanghai_trip", title: "去上海", category: "travel", location: "上海" },
+          { type: "add_life_event", ref: "tokyo_trip", title: "去东京", category: "travel", location: "东京" }
+        ],
+        memoryWrites: []
+      });
+
+      const ticketCheckIns = result.actions.filter((action) => action.type === "add_check_in" && /高铁票|车票|订票/.test(actionText(action)));
+      assert.equal(ticketCheckIns.length, 1);
+      assert.equal(ticketCheckIns[0].relatedRef, "shanghai_trip");
     }
   },
   {

@@ -1,7 +1,7 @@
 import type { InterpretAction } from "@/lib/ai/interpretation";
+import { hasSeparateTravelPrepCheckIn, travelPrepCategoriesIn } from "@/lib/ai/productCompiler/policies/travelPrepPolicy";
 import { actionText } from "./actionText";
 import { rawHasRecurringSleepGoal, resolveRecurringSleepTarget } from "./temporalPolicy";
-import { hasSeparateTravelPrepCheckIn, travelPrepCategoriesIn } from "./travelPrepPolicy";
 
 function rawHasAmbiguousSleepDeadline(rawText: string) {
   if (rawHasRecurringSleepGoal(rawText)) return false;

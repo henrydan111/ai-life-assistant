@@ -1,6 +1,6 @@
 import type { AiInterpretation, InterpretAction } from "@/lib/ai/interpretation";
-import { ensureActionRef } from "./actionRefs";
-import { actionText } from "./actionText";
+import { ensureActionRef } from "@/lib/ai/agentPlan/actionRefs";
+import { actionText } from "@/lib/ai/agentPlan/actionText";
 
 const travelPrepCategories = [
   {
@@ -43,9 +43,43 @@ function sameRelatedAnchor(
   first: Extract<InterpretAction, { type: "add_check_in" }>,
   second: Extract<InterpretAction, { type: "add_check_in" }>
 ) {
-  if (first.relatedRef || second.relatedRef) return first.relatedRef === second.relatedRef;
-  if (first.relatedId || second.relatedId) return first.relatedId === second.relatedId;
+  const firstAnchor = first.relatedRef ?? first.relatedId;
+  const secondAnchor = second.relatedRef ?? second.relatedId;
+  if (firstAnchor || secondAnchor) return firstAnchor === secondAnchor;
   return first.relatedType === second.relatedType;
+}
+
+function travelEventCandidateIndices(actions: InterpretAction[]) {
+  return actions.flatMap((action, index) => {
+    if (action.type !== "add_life_event") return [];
+    if (action.category !== "travel" && !/去|出行|旅行|上海|苏州/.test(actionText(action))) return [];
+    return [index];
+  });
+}
+
+function knownDestinationTokens(action: Extract<InterpretAction, { type: "add_life_event" }>) {
+  const text = actionText(action);
+  return [
+    action.location,
+    ...["上海", "苏州", "北京", "杭州", "南京", "深圳", "广州", "成都", "重庆", "西安", "武汉", "长沙", "厦门", "青岛", "天津", "香港", "澳门", "台北", "宁波", "无锡", "合肥", "郑州", "昆明", "东京", "新加坡"].filter(
+      (destination) => text.includes(destination)
+    )
+  ].filter((value): value is string => Boolean(value?.trim()));
+}
+
+function travelEventMatchesRawText(rawText: string, action: Extract<InterpretAction, { type: "add_life_event" }>) {
+  return knownDestinationTokens(action).some((destination) => rawText.includes(destination));
+}
+
+function travelEventIndexForPrep(rawText: string, actions: InterpretAction[]) {
+  const candidateIndices = travelEventCandidateIndices(actions);
+  if (candidateIndices.length <= 1) return candidateIndices[0] ?? -1;
+
+  const matched = candidateIndices.filter((index) => {
+    const action = actions[index];
+    return action.type === "add_life_event" && travelEventMatchesRawText(rawText, action);
+  });
+  return matched.length === 1 ? matched[0] : -1;
 }
 
 export function splitCombinedTravelPrepCheckIns(interpretation: AiInterpretation): AiInterpretation {
@@ -90,9 +124,7 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
   if (!categories.length) return interpretation;
 
   let actions = interpretation.actions;
-  const eventIndex = actions.findIndex(
-    (action) => action.type === "add_life_event" && (action.category === "travel" || /去|出行|旅行|上海|苏州/.test(actionText(action)))
-  );
+  const eventIndex = travelEventIndexForPrep(rawText, actions);
   if (eventIndex === -1) return interpretation;
 
   const withRef = ensureActionRef(actions, eventIndex, "travel_event");
@@ -102,7 +134,13 @@ function ensureMentionedTravelPrepCheckIns(rawText: string, interpretation: AiIn
 
   categories.forEach((category) => {
     const exists = actions.some((action) => {
-      if (action.type !== "add_check_in" || action.relatedType !== "life_event" || action.relatedRef !== eventRef) return false;
+      if (
+        action.type !== "add_check_in" ||
+        action.relatedType !== "life_event" ||
+        (action.relatedRef ?? action.relatedId) !== eventRef
+      ) {
+        return false;
+      }
       const text = actionText(action);
       return category.pattern.test(text) && !containsMultipleTravelPrepCategories(text);
     });

@@ -2,12 +2,12 @@ import type { AiInterpretation } from "@/lib/ai/interpretation";
 import { applyRoutineGoalPolicy } from "@/lib/ai/productCompiler/policies/routineGoalPolicy";
 import { applyShoppingPolicy } from "@/lib/ai/productCompiler/policies/shoppingPolicy";
 import { applyTravelPolicy } from "@/lib/ai/productCompiler/policies/travelPolicy";
+import { applyTravelPrepPolicy } from "@/lib/ai/productCompiler/policies/travelPrepPolicy";
 import { repairFeedbackCopy } from "@/lib/ai/productCompiler/responseRepair";
 import type { AssistantState } from "@/types/domain";
 import { actionText } from "./actionText";
 import { actionRefs, ensureActionRef } from "./actionRefs";
 import type { PlanTrace } from "./types";
-import { applyTravelPrepPolicy } from "./travelPrepPolicy";
 
 function repairExistingRelatedRefs(state: AssistantState, interpretation: AiInterpretation): AiInterpretation {
   const refs = actionRefs(interpretation.actions);
